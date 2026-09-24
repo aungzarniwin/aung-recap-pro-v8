@@ -1,6 +1,6 @@
 {
   "name": "aung-recap-pro-v8",
-  "version": "8.0.1",
+  "version": "8.1.0",
   "description": "AUNG RECAP PRO V8 - AI Recap Studio",
   "type": "module",
   "main": "server.js",
@@ -11,6 +11,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@google/genai": "^1.20.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "multer": "^2.0.2"
