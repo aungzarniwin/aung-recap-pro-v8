@@ -1,1 +1,18 @@
-
+{
+  "name": "aung-recap-pro-v8",
+  "version": "8.0.1",
+  "description": "AUNG RECAP PRO V8 - AI Recap Studio",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "multer": "^2.0.2"
+  }
+}
