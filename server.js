@@ -1,53 +1,66 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
-import fs from "fs";
-import path from "path";
-import crypto from "crypto";
-import os from "os";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import { GoogleGenAI } from "@google/genai";
 
 const app = express();
 
-const PORT = Number(process.env.PORT) || 10000;
-const VERSION = "8.1.0";
-
-const MAX_FILE_SIZE = 500 * 1024 * 1024;
-
+const PORT = process.env.PORT || 10000;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL =
   process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
-const GEMINI_API_KEY =
-  process.env.GEMINI_API_KEY || "";
+const MAX_VIDEO_SIZE = 500 * 1024 * 1024;
 
-const ALLOWED_TYPES = new Set([
-  "video/mp4",
-  "video/quicktime",
-  "video/webm",
-  "video/x-matroska",
-  "video/x-msvideo",
-  "video/mpeg",
-  "video/ogg"
-]);
+/*
+|--------------------------------------------------------------------------
+| RATE LIMIT PROTECTION
+|--------------------------------------------------------------------------
+*/
 
-const uploadDir = path.join(
-  os.tmpdir(),
-  "aung-recap-pro-v8"
-);
+const MAX_AI_RETRIES = 2;
+const MIN_AI_REQUEST_INTERVAL = 12000;
 
-fs.mkdirSync(uploadDir, {
+let lastAIRequestAt = 0;
+let aiRequestLock = false;
+
+/*
+|--------------------------------------------------------------------------
+| DIRECTORIES
+|--------------------------------------------------------------------------
+*/
+
+const ROOT_DIR = process.cwd();
+const DATA_DIR = path.join(ROOT_DIR, "data");
+const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
+
+fs.mkdirSync(UPLOAD_DIR, {
   recursive: true
 });
 
-const jobs = new Map();
+/*
+|--------------------------------------------------------------------------
+| MIDDLEWARE
+|--------------------------------------------------------------------------
+*/
 
-const ai = GEMINI_API_KEY
-  ? new GoogleGenAI({
-      apiKey: GEMINI_API_KEY
-    })
-  : null;
-
-app.use(cors());
+app.use(
+  cors({
+    origin: "*",
+    methods: [
+      "GET",
+      "POST",
+      "OPTIONS"
+    ],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization"
+    ]
+  })
+);
 
 app.use(
   express.json({
@@ -55,45 +68,75 @@ app.use(
   })
 );
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
+app.use(
+  express.urlencoded({
+    extended: true
+  })
+);
 
-  filename: (req, file, cb) => {
-    const extension =
-      path.extname(file.originalname) || ".mp4";
-
-    const filename =
-      `${crypto.randomUUID()}${extension}`;
-
-    cb(null, filename);
-  }
-});
+/*
+|--------------------------------------------------------------------------
+| MULTER
+|--------------------------------------------------------------------------
+*/
 
 const upload = multer({
-  storage,
+  dest: UPLOAD_DIR,
 
   limits: {
-    fileSize: MAX_FILE_SIZE
+    fileSize: MAX_VIDEO_SIZE
   },
 
   fileFilter: (req, file, cb) => {
-    if (!ALLOWED_TYPES.has(file.mimetype)) {
-      return cb(
-        new Error(
-          "Unsupported video format. Please use MP4, MOV, WEBM, MKV, AVI, MPEG or OGG."
-        )
-      );
+    const allowedTypes = [
+      "video/mp4",
+      "video/webm",
+      "video/quicktime",
+      "video/x-matroska",
+      "video/avi",
+      "video/mpeg"
+    ];
+
+    if (
+      allowedTypes.includes(
+        file.mimetype
+      )
+    ) {
+      cb(null, true);
+      return;
     }
 
-    cb(null, true);
+    cb(
+      new Error(
+        `Unsupported video format: ${
+          file.mimetype || "unknown"
+        }`
+      )
+    );
   }
 });
 
-/* =========================================================
-   HELPERS
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| JOB STORAGE
+|--------------------------------------------------------------------------
+*/
+
+const jobs = new Map();
+
+/*
+|--------------------------------------------------------------------------
+| HELPERS
+|--------------------------------------------------------------------------
+*/
+
+function now() {
+  return new Date().toISOString();
+}
+
+function createJobId() {
+  return crypto.randomUUID();
+}
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -102,977 +145,1218 @@ function sleep(ms) {
 }
 
 function safeText(value) {
-  if (value === null || value === undefined) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
     return "";
   }
 
-  return String(value).trim();
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
-function extractJson(text) {
-  const clean = safeText(text)
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
+function updateJob(jobId, patch) {
+  const job = jobs.get(jobId);
+
+  if (!job) {
+    return null;
+  }
+
+  Object.assign(job, patch, {
+    updatedAt: now()
+  });
+
+  jobs.set(jobId, job);
+
+  return job;
+}
+
+function failJob(jobId, error) {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error || "Unknown error");
+
+  updateJob(jobId, {
+    status: "failed",
+    progress: 100,
+    message: "AI analysis failed",
+    error: message
+  });
+
+  console.error(
+    `[JOB ${jobId}] FAILED`
+  );
+
+  console.error(message);
+}
+
+function getGeminiClient() {
+  if (!GEMINI_API_KEY) {
+    throw new Error(
+      "GEMINI_API_KEY is not configured on Render"
+    );
+  }
+
+  return new GoogleGenAI({
+    apiKey: GEMINI_API_KEY
+  });
+}
+
+/*
+|--------------------------------------------------------------------------
+| ERROR PARSING
+|--------------------------------------------------------------------------
+*/
+
+function getErrorMessage(error) {
+  if (!error) {
+    return "";
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error.message) {
+    return String(error.message);
+  }
 
   try {
-    return JSON.parse(clean);
-  } catch {}
-
-  const firstObject = clean.indexOf("{");
-  const lastObject = clean.lastIndexOf("}");
-
-  if (
-    firstObject !== -1 &&
-    lastObject !== -1 &&
-    lastObject > firstObject
-  ) {
-    const possibleJson =
-      clean.slice(
-        firstObject,
-        lastObject + 1
-      );
-
-    try {
-      return JSON.parse(possibleJson);
-    } catch {}
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
   }
-
-  return null;
 }
 
-function normalizeAnalysis(data, fallbackText) {
-  const source =
-    data && typeof data === "object"
-      ? data
-      : {};
+function isRateLimitError(error) {
+  const message =
+    getErrorMessage(error).toLowerCase();
 
-  const scenes = Array.isArray(source.scenes)
-    ? source.scenes
-        .slice(0, 100)
-        .map((scene, index) => ({
-          id:
-            scene?.id ??
-            index + 1,
-
-          start:
-            safeText(scene?.start),
-
-          end:
-            safeText(scene?.end),
-
-          title:
-            safeText(scene?.title) ||
-            `Scene ${index + 1}`,
-
-          description:
-            safeText(scene?.description),
-
-          characters:
-            Array.isArray(scene?.characters)
-              ? scene.characters
-                  .map(safeText)
-                  .filter(Boolean)
-              : [],
-
-          importance:
-            safeText(scene?.importance)
-        }))
-    : [];
-
-  const characters =
-    Array.isArray(source.characters)
-      ? source.characters
-          .slice(0, 50)
-          .map((character) => ({
-            name:
-              safeText(character?.name),
-
-            description:
-              safeText(character?.description),
-
-            role:
-              safeText(character?.role)
-          }))
-          .filter(
-            (item) => item.name
-          )
-      : [];
-
-  const keyEvents =
-    Array.isArray(source.keyEvents)
-      ? source.keyEvents
-          .slice(0, 50)
-          .map((event, index) => ({
-            id:
-              event?.id ??
-              index + 1,
-
-            timestamp:
-              safeText(event?.timestamp),
-
-            event:
-              safeText(event?.event),
-
-            importance:
-              safeText(event?.importance)
-          }))
-          .filter(
-            (item) => item.event
-          )
-      : [];
-
-  return {
-    title:
-      safeText(source.title) ||
-      "Untitled Video",
-
-    genre:
-      safeText(source.genre) ||
-      "Unknown",
-
-    duration:
-      safeText(source.duration),
-
-    storyType:
-      safeText(source.storyType) ||
-      "Story",
-
-    logline:
-      safeText(source.logline),
-
-    synopsis:
-      safeText(source.synopsis),
-
-    characters,
-
-    keyEvents,
-
-    scenes,
-
-    locations:
-      Array.isArray(source.locations)
-        ? source.locations
-            .map(safeText)
-            .filter(Boolean)
-            .slice(0, 50)
-        : [],
-
-    themes:
-      Array.isArray(source.themes)
-        ? source.themes
-            .map(safeText)
-            .filter(Boolean)
-            .slice(0, 30)
-        : [],
-
-    audioSummary:
-      safeText(source.audioSummary),
-
-    visualStyle:
-      safeText(source.visualStyle),
-
-    recapDirection:
-      safeText(source.recapDirection),
-
-    rawText:
-      safeText(fallbackText)
-  };
+  return (
+    message.includes("429") ||
+    message.includes(
+      "rate limit exceeded"
+    ) ||
+    message.includes(
+      "rate_limit_exceeded"
+    ) ||
+    message.includes(
+      "resource_exhausted"
+    ) ||
+    message.includes(
+      "too many requests"
+    )
+  );
 }
 
-function publicJob(job) {
-  return {
-    id: job.id,
+function extractRetrySeconds(error) {
+  const message =
+    getErrorMessage(error);
 
-    status: job.status,
+  /*
+   * Examples:
+   * retry in 59s
+   * retry in 60 seconds
+   * retry after 59s
+   */
 
-    progress:
-      Number(job.progress) || 0,
+  const patterns = [
+    /retry\s+(?:in|after)\s+(\d+)\s*s/i,
+    /retry\s+(?:in|after)\s+(\d+)\s*seconds?/i,
+    /retryDelay["']?\s*:\s*["']?(\d+)s/i
+  ];
 
-    stage:
-      safeText(job.stage),
+  for (const pattern of patterns) {
+    const match =
+      message.match(pattern);
 
-    originalName:
-      job.originalName,
+    if (match) {
+      const seconds =
+        Number(match[1]);
 
-    mimeType:
-      job.mimeType,
-
-    size:
-      job.size,
-
-    createdAt:
-      job.createdAt,
-
-    updatedAt:
-      job.updatedAt,
-
-    error:
-      job.error || null,
-
-    analysis:
-      job.analysis || null
-  };
-}
-
-/* =========================================================
-   BASIC ROUTES
-========================================================= */
-
-app.get("/", (req, res) => {
-  return res.status(200).json({
-    ok: true,
-    app: "AUNG RECAP PRO",
-    version: VERSION,
-    status: "online"
-  });
-});
-
-app.get("/health", (req, res) => {
-  return res.status(200).json({
-    ok: true,
-    app: "AUNG RECAP PRO",
-    version: VERSION,
-    status: "healthy",
-    node: process.version,
-    geminiConfigured: Boolean(GEMINI_API_KEY),
-    model: GEMINI_MODEL,
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get("/api", (req, res) => {
-  return res.status(200).json({
-    ok: true,
-    app: "AUNG RECAP PRO",
-    version: VERSION,
-    status: "online",
-
-    endpoints: {
-      health: "GET /health",
-      api: "GET /api",
-      upload: "POST /api/upload",
-      analyze: "POST /api/analyze/:jobId",
-      job: "GET /api/jobs/:jobId"
-    }
-  });
-});
-
-/* =========================================================
-   UPLOAD
-========================================================= */
-
-app.post(
-  "/api/upload",
-
-  (req, res, next) => {
-    upload.single("video")(
-      req,
-      res,
-      (err) => {
-        if (!err) {
-          return next();
-        }
-
-        if (
-          err.code ===
-          "LIMIT_FILE_SIZE"
-        ) {
-          return res.status(413).json({
-            ok: false,
-            error:
-              "Video file is too large",
-            maxSize: "500 MB"
-          });
-        }
-
-        return res.status(400).json({
-          ok: false,
-          error:
-            err.message ||
-            "Upload failed"
-        });
+      if (
+        Number.isFinite(seconds) &&
+        seconds > 0
+      ) {
+        return Math.min(
+          Math.max(seconds, 5),
+          120
+        );
       }
-    );
-  },
-
-  (req, res) => {
-    if (!req.file) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          "No video file received"
-      });
     }
-
-    const jobId =
-      crypto.randomUUID();
-
-    const now =
-      new Date().toISOString();
-
-    const job = {
-      id: jobId,
-
-      status: "uploaded",
-
-      progress: 10,
-
-      stage:
-        "Video uploaded",
-
-      originalName:
-        req.file.originalname,
-
-      storedName:
-        req.file.filename,
-
-      filePath:
-        req.file.path,
-
-      mimeType:
-        req.file.mimetype,
-
-      size:
-        req.file.size,
-
-      createdAt: now,
-
-      updatedAt: now,
-
-      error: null,
-
-      analysis: null
-    };
-
-    jobs.set(
-      jobId,
-      job
-    );
-
-    console.log("");
-    console.log(
-      "=========================================="
-    );
-    console.log(
-      "AUNG RECAP PRO V8.1"
-    );
-    console.log(
-      "VIDEO UPLOAD"
-    );
-    console.log(
-      "=========================================="
-    );
-    console.log(
-      `JOB ID: ${jobId}`
-    );
-    console.log(
-      `FILE: ${req.file.originalname}`
-    );
-    console.log(
-      `SIZE: ${req.file.size} bytes`
-    );
-    console.log(
-      `TYPE: ${req.file.mimetype}`
-    );
-    console.log(
-      "STATUS: UPLOADED"
-    );
-    console.log(
-      "=========================================="
-    );
-    console.log("");
-
-    return res.status(201).json({
-      ok: true,
-
-      message:
-        "Video uploaded successfully",
-
-      job:
-        publicJob(job)
-    });
-  }
-);
-
-/* =========================================================
-   START AI ANALYSIS
-========================================================= */
-
-app.post(
-  "/api/analyze/:jobId",
-  async (req, res) => {
-
-    const {
-      jobId
-    } = req.params;
-
-    const job =
-      jobs.get(jobId);
-
-    if (!job) {
-      return res.status(404).json({
-        ok: false,
-        error:
-          "Job not found",
-        jobId
-      });
-    }
-
-    if (!GEMINI_API_KEY) {
-      return res.status(503).json({
-        ok: false,
-        error:
-          "Gemini API is not configured",
-        message:
-          "Add GEMINI_API_KEY in Render Environment Variables"
-      });
-    }
-
-    if (
-      job.status ===
-        "analyzing" ||
-      job.status ===
-        "processing"
-    ) {
-      return res.status(409).json({
-        ok: false,
-        error:
-          "Analysis is already running",
-        job:
-          publicJob(job)
-      });
-    }
-
-    job.status =
-      "analyzing";
-
-    job.progress = 15;
-
-    job.stage =
-      "Preparing video for AI analysis";
-
-    job.updatedAt =
-      new Date().toISOString();
-
-    return res.status(202).json({
-      ok: true,
-
-      message:
-        "AI video analysis started",
-
-      job:
-        publicJob(job)
-    });
-  }
-);
-
-/* =========================================================
-   AI WORKER
-========================================================= */
-
-async function analyzeVideo(job) {
-
-  if (!ai) {
-    throw new Error(
-      "Gemini API client is not configured"
-    );
   }
 
-  job.status =
-    "analyzing";
+  return 60;
+}
 
-  job.progress = 20;
+/*
+|--------------------------------------------------------------------------
+| GLOBAL AI REQUEST SPACING
+|--------------------------------------------------------------------------
+*/
 
-  job.stage =
-    "Uploading video to Gemini";
-
-  job.updatedAt =
-    new Date().toISOString();
-
-  const uploadedFile =
-    await ai.files.upload({
-      file: job.filePath,
-
-      config: {
-        mimeType:
-          job.mimeType
-      }
-    });
-
-  if (!uploadedFile?.name) {
-    throw new Error(
-      "Gemini video upload did not return a file reference"
-    );
-  }
-
-  job.progress = 35;
-
-  job.stage =
-    "Gemini is processing the video";
-
-  job.updatedAt =
-    new Date().toISOString();
-
-  let geminiFile =
-    await ai.files.get({
-      name:
-        uploadedFile.name
-    });
-
-  const processingStarted =
+async function waitForAIRequestSlot(
+  jobId
+) {
+  const currentTime =
     Date.now();
 
-  const maxProcessingTime =
-    20 * 60 * 1000;
+  const elapsed =
+    currentTime - lastAIRequestAt;
+
+  if (
+    elapsed <
+    MIN_AI_REQUEST_INTERVAL
+  ) {
+    const waitTime =
+      MIN_AI_REQUEST_INTERVAL -
+      elapsed;
+
+    const waitSeconds =
+      Math.ceil(waitTime / 1000);
+
+    updateJob(jobId, {
+      status: "waiting",
+      progress: 55,
+      message:
+        `AI request protection active. Waiting ${waitSeconds}s...`
+    });
+
+    await sleep(waitTime);
+  }
+
+  lastAIRequestAt = Date.now();
+}
+
+/*
+|--------------------------------------------------------------------------
+| AI REQUEST WITH 429 PROTECTION
+|--------------------------------------------------------------------------
+*/
+
+async function runGeminiInteraction(
+  ai,
+  jobId,
+  input
+) {
+  if (aiRequestLock) {
+    updateJob(jobId, {
+      status: "waiting",
+      progress: 55,
+      message:
+        "Another AI analysis is running. Waiting..."
+    });
+
+    while (aiRequestLock) {
+      await sleep(3000);
+    }
+  }
+
+  aiRequestLock = true;
+
+  try {
+    let attempt = 0;
+
+    while (
+      attempt <= MAX_AI_RETRIES
+    ) {
+      try {
+        await waitForAIRequestSlot(
+          jobId
+        );
+
+        updateJob(jobId, {
+          status: "analyzing",
+          progress:
+            attempt === 0
+              ? 60
+              : 60 + attempt * 5,
+          message:
+            attempt === 0
+              ? "AI is analyzing the video..."
+              : `Retrying AI analysis... attempt ${attempt + 1}`
+        });
+
+        console.log(
+          `[JOB ${jobId}] Gemini request attempt ${
+            attempt + 1
+          }`
+        );
+
+        const interaction =
+          await ai.interactions.create(
+            {
+              model: GEMINI_MODEL,
+              input
+            }
+          );
+
+        return interaction;
+      } catch (error) {
+        const rateLimited =
+          isRateLimitError(error);
+
+        if (
+          !rateLimited ||
+          attempt >= MAX_AI_RETRIES
+        ) {
+          throw error;
+        }
+
+        const retrySeconds =
+          extractRetrySeconds(
+            error
+          );
+
+        console.warn(
+          `[JOB ${jobId}] Gemini 429. Waiting ${retrySeconds}s before retry`
+        );
+
+        for (
+          let remaining =
+            retrySeconds;
+          remaining > 0;
+          remaining--
+        ) {
+          updateJob(jobId, {
+            status: "waiting",
+            progress: 58,
+            message:
+              `Gemini rate limit reached. Retrying in ${remaining}s...`
+          });
+
+          await sleep(1000);
+        }
+
+        attempt++;
+      }
+    }
+
+    throw new Error(
+      "Gemini analysis retry limit reached"
+    );
+  } finally {
+    aiRequestLock = false;
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| GEMINI FILE PROCESSING
+|--------------------------------------------------------------------------
+*/
+
+async function waitForGeminiFile(
+  ai,
+  fileName,
+  jobId
+) {
+  let geminiFile =
+    await ai.files.get({
+      name: fileName
+    });
+
+  let attempts = 0;
+
+  const maxAttempts = 180;
 
   while (
     geminiFile &&
-    geminiFile.state ===
+    String(
+      geminiFile.state || ""
+    ).toUpperCase() ===
       "PROCESSING"
   ) {
+    attempts++;
+
+    const progress =
+      Math.min(
+        45,
+        20 +
+          Math.round(
+            (attempts /
+              maxAttempts) *
+              25
+          )
+      );
+
+    updateJob(jobId, {
+      status: "processing",
+      progress,
+      message:
+        "Gemini is processing the uploaded video..."
+    });
+
+    await sleep(3000);
+
+    geminiFile =
+      await ai.files.get({
+        name: fileName
+      });
 
     if (
-      Date.now() -
-        processingStarted >
-      maxProcessingTime
+      attempts >= maxAttempts
     ) {
       throw new Error(
         "Gemini video processing timed out"
       );
     }
+  }
 
-    await sleep(5000);
+  const state =
+    String(
+      geminiFile?.state || ""
+    ).toUpperCase();
 
-    geminiFile =
-      await ai.files.get({
-        name:
-          uploadedFile.name
-      });
+  if (state === "FAILED") {
+    throw new Error(
+      "Gemini failed to process the uploaded video"
+    );
+  }
 
-    job.progress =
-      Math.min(
-        60,
-        job.progress + 2
+  if (
+    state &&
+    state !== "ACTIVE"
+  ) {
+    throw new Error(
+      `Unexpected Gemini file state: ${state}`
+    );
+  }
+
+  return geminiFile;
+}
+
+/*
+|--------------------------------------------------------------------------
+| JSON CLEANING
+|--------------------------------------------------------------------------
+*/
+
+function cleanJsonText(text) {
+  let value = safeText(text);
+
+  value =
+    value.replace(
+      /```json/gi,
+      ""
+    );
+
+  value =
+    value.replace(
+      /```/g,
+      ""
+    );
+
+  const firstBrace =
+    value.indexOf("{");
+
+  const lastBrace =
+    value.lastIndexOf("}");
+
+  if (
+    firstBrace !== -1 &&
+    lastBrace !== -1
+  ) {
+    value =
+      value.slice(
+        firstBrace,
+        lastBrace + 1
+      );
+  }
+
+  return value.trim();
+}
+
+/*
+|--------------------------------------------------------------------------
+| NORMALIZE ANALYSIS
+|--------------------------------------------------------------------------
+*/
+
+function normalizeAnalysis(
+  rawText
+) {
+  const fallback = {
+    title: "Myanmar AI Recap",
+
+    storyType:
+      "Movie / Video",
+
+    synopsis:
+      rawText || "",
+
+    characters: [],
+
+    keyEvents: [],
+
+    scenes: []
+  };
+
+  if (!rawText) {
+    return fallback;
+  }
+
+  try {
+    const parsed =
+      JSON.parse(
+        cleanJsonText(
+          rawText
+        )
       );
 
-    job.stage =
-      "Gemini is processing the video";
+    return {
+      title:
+        typeof parsed.title ===
+        "string"
+          ? parsed.title
+          : fallback.title,
 
-    job.updatedAt =
-      new Date().toISOString();
+      storyType:
+        typeof parsed.storyType ===
+        "string"
+          ? parsed.storyType
+          : fallback.storyType,
+
+      synopsis:
+        typeof parsed.synopsis ===
+        "string"
+          ? parsed.synopsis
+          : fallback.synopsis,
+
+      characters:
+        Array.isArray(
+          parsed.characters
+        )
+          ? parsed.characters
+          : [],
+
+      keyEvents:
+        Array.isArray(
+          parsed.keyEvents
+        )
+          ? parsed.keyEvents
+          : [],
+
+      scenes:
+        Array.isArray(
+          parsed.scenes
+        )
+          ? parsed.scenes
+          : []
+    };
+  } catch {
+    return fallback;
   }
+}
 
-  if (
-    geminiFile?.state ===
-    "FAILED"
-  ) {
-    throw new Error(
-      "Gemini failed to process the video"
+/*
+|--------------------------------------------------------------------------
+| VIDEO ANALYSIS
+|--------------------------------------------------------------------------
+*/
+
+async function analyzeVideo(
+  job
+) {
+  const ai =
+    getGeminiClient();
+
+  try {
+    updateJob(job.id, {
+      status: "analyzing",
+      progress: 10,
+      message:
+        "Uploading video to Gemini..."
+    });
+
+    console.log(
+      `[JOB ${job.id}] Uploading ${job.originalName}`
     );
-  }
 
-  if (
-    geminiFile?.state !==
-    "ACTIVE"
-  ) {
-    throw new Error(
-      "Gemini video file did not become ACTIVE"
+    const uploadedFile =
+      await ai.files.upload({
+        file: job.filePath,
+        config: {
+          mimeType:
+            job.mimeType
+        }
+      });
+
+    if (
+      !uploadedFile?.name
+    ) {
+      throw new Error(
+        "Gemini upload completed but no file name was returned"
+      );
+    }
+
+    updateJob(job.id, {
+      progress: 20,
+      message:
+        "Video uploaded. Waiting for Gemini processing...",
+      geminiFileName:
+        uploadedFile.name,
+      geminiFileUri:
+        uploadedFile.uri ||
+        null
+    });
+
+    console.log(
+      `[JOB ${job.id}] Gemini file: ${uploadedFile.name}`
     );
-  }
 
-  job.progress = 65;
+    const readyFile =
+      await waitForGeminiFile(
+        ai,
+        uploadedFile.name,
+        job.id
+      );
 
-  job.stage =
-    "AI is understanding the story";
+    updateJob(job.id, {
+      status: "analyzing",
+      progress: 50,
+      message:
+        "AI is preparing video understanding..."
+    });
 
-  job.updatedAt =
-    new Date().toISOString();
+    const prompt = `
+You are the AI analysis engine for AUNG RECAP PRO.
 
-  const prompt = `
-You are the video understanding engine for AUNG RECAP PRO.
+Analyze the uploaded video carefully.
 
-Analyze the supplied video carefully using both visual and audio information when available.
-
-The purpose is to prepare accurate source material for a later Myanmar movie-recap script.
-
-IMPORTANT:
-- Do not invent events
-- Do not invent character names
-- If a name is unknown, use a descriptive label such as "the young man" or "the woman"
-- Keep timestamps approximate when exact timestamps are unavailable
-- Separate observed facts from interpretation
-- Identify important story events
-- Identify major characters
-- Identify locations
-- Identify the overall story structure
-- Mention important visual and audio details
-- Do not write the final recap narration yet
+The final goal is to create a Myanmar-language movie or video recap.
 
 Return ONLY valid JSON.
 
-Use exactly this structure:
+Required structure:
 
 {
-  "title": "",
-  "genre": "",
-  "duration": "",
-  "storyType": "",
-  "logline": "",
-  "synopsis": "",
+  "title": "short title",
+  "storyType": "type of story/video",
+  "synopsis": "detailed Myanmar-language synopsis",
   "characters": [
     {
-      "name": "",
-      "description": "",
-      "role": ""
+      "name": "character name",
+      "role": "role",
+      "description": "short description in Myanmar"
     }
   ],
   "keyEvents": [
     {
-      "id": 1,
-      "timestamp": "",
-      "event": "",
-      "importance": ""
+      "order": 1,
+      "event": "important event in Myanmar",
+      "importance": "high"
     }
   ],
   "scenes": [
     {
-      "id": 1,
-      "start": "",
-      "end": "",
-      "title": "",
-      "description": "",
-      "characters": [],
-      "importance": ""
+      "order": 1,
+      "description": "scene description in Myanmar",
+      "importance": "high"
     }
-  ],
-  "locations": [],
-  "themes": [],
-  "audioSummary": "",
-  "visualStyle": "",
-  "recapDirection": ""
+  ]
 }
 
-Analyze the complete video and prioritize story-critical information.
+Rules:
+
+1. Understand the actual visual content
+2. Identify the main story
+3. Identify important characters when possible
+4. Identify major events chronologically
+5. Identify meaningful scene changes
+6. Never invent unsupported characters or events
+7. Write natural Myanmar language
+8. Make the synopsis detailed enough for a future 5-10 minute recap
+9. Return JSON only
 `;
 
-  const interaction =
-    await ai.interactions.create({
+    const interaction =
+      await runGeminiInteraction(
+        ai,
+        job.id,
+        [
+          {
+            type: "video",
+            uri: readyFile.uri,
+            mime_type:
+              readyFile.mimeType
+          },
+          {
+            type: "text",
+            text: prompt
+          }
+        ]
+      );
+
+    const outputText =
+      safeText(
+        interaction?.output_text
+      );
+
+    if (!outputText) {
+      throw new Error(
+        "Gemini returned an empty analysis response"
+      );
+    }
+
+    updateJob(job.id, {
+      progress: 90,
+      message:
+        "Analysis completed. Preparing results..."
+    });
+
+    const analysis =
+      normalizeAnalysis(
+        outputText
+      );
+
+    const result = {
+      provider:
+        "Google Gemini",
+
       model:
         GEMINI_MODEL,
 
-      input: [
-        {
-          type: "video",
+      video: {
+        originalName:
+          job.originalName,
 
-          uri:
-            geminiFile.uri,
+        mimeType:
+          job.mimeType,
 
-          mime_type:
-            geminiFile.mimeType
-        },
+        size:
+          job.size
+      },
 
-        {
-          type: "text",
+      analysis,
 
-          text:
-            prompt
-        }
-      ]
+      rawText:
+        outputText
+    };
+
+    updateJob(job.id, {
+      status: "completed",
+      progress: 100,
+      message:
+        "AI analysis completed successfully",
+      result,
+      error: null
     });
 
-  job.progress = 90;
-
-  job.stage =
-    "Structuring AI analysis";
-
-  job.updatedAt =
-    new Date().toISOString();
-
-  const outputText =
-    safeText(
-      interaction?.output_text
+    console.log(
+      `[JOB ${job.id}] Analysis completed`
     );
 
-  if (!outputText) {
-    throw new Error(
-      "Gemini returned an empty analysis"
-    );
+    return result;
+  } catch (error) {
+    const rateLimited =
+      isRateLimitError(error);
+
+    if (rateLimited) {
+      failJob(
+        job.id,
+        new Error(
+          "Gemini rate limit is still active after automatic retries. Please wait about 60 seconds and upload/analyze again."
+        )
+      );
+
+      return null;
+    }
+
+    throw error;
   }
-
-  const parsed =
-    extractJson(
-      outputText
-    );
-
-  const analysis =
-    normalizeAnalysis(
-      parsed,
-      outputText
-    );
-
-  job.analysis =
-    analysis;
-
-  job.progress = 100;
-
-  job.status =
-    "completed";
-
-  job.stage =
-    "AI analysis complete";
-
-  job.updatedAt =
-    new Date().toISOString();
-
-  console.log("");
-  console.log(
-    "=========================================="
-  );
-  console.log(
-    "AI ANALYSIS COMPLETE"
-  );
-  console.log(
-    `JOB ID: ${job.id}`
-  );
-  console.log(
-    `MODEL: ${GEMINI_MODEL}`
-  );
-  console.log(
-    `SCENES: ${analysis.scenes.length}`
-  );
-  console.log(
-    `CHARACTERS: ${analysis.characters.length}`
-  );
-  console.log(
-    `KEY EVENTS: ${analysis.keyEvents.length}`
-  );
-  console.log(
-    "=========================================="
-  );
-  console.log("");
-
-  return analysis;
 }
 
-/* =========================================================
-   JOB STATUS
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| ROOT
+|--------------------------------------------------------------------------
+*/
+
+app.get(
+  "/",
+  (req, res) => {
+    res.json({
+      ok: true,
+      app: "AUNG RECAP PRO",
+      version: "8.1.2",
+      status: "online",
+      message:
+        "AUNG RECAP PRO V8 API is running"
+    });
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| HEALTH
+|--------------------------------------------------------------------------
+*/
+
+app.get(
+  "/health",
+  (req, res) => {
+    res.json({
+      ok: true,
+
+      app:
+        "AUNG RECAP PRO",
+
+      version:
+        "8.1.2",
+
+      status:
+        "healthy",
+
+      node:
+        process.version,
+
+      geminiConfigured:
+        Boolean(
+          GEMINI_API_KEY
+        ),
+
+      model:
+        GEMINI_MODEL,
+
+      rateLimitProtection:
+        true,
+
+      maxAIRetries:
+        MAX_AI_RETRIES,
+
+      timestamp:
+        now()
+    });
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| API INFO
+|--------------------------------------------------------------------------
+*/
+
+app.get(
+  "/api",
+  (req, res) => {
+    res.json({
+      ok: true,
+
+      app:
+        "AUNG RECAP PRO",
+
+      version:
+        "8.1.2",
+
+      protection: {
+        rateLimit:
+          true,
+
+        automaticRetry:
+          true,
+
+        duplicateProtection:
+          true
+      },
+
+      endpoints: {
+        health:
+          "GET /health",
+
+        upload:
+          "POST /api/upload",
+
+        job:
+          "GET /api/jobs/:jobId",
+
+        analyze:
+          "POST /api/analyze/:jobId/start"
+      }
+    });
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| UPLOAD
+|--------------------------------------------------------------------------
+*/
+
+app.post(
+  "/api/upload",
+  upload.single("video"),
+  (req, res) => {
+    try {
+      if (!req.file) {
+        return res
+          .status(400)
+          .json({
+            ok: false,
+            error:
+              "No video file received"
+          });
+      }
+
+      const jobId =
+        createJobId();
+
+      const job = {
+        id:
+          jobId,
+
+        status:
+          "uploaded",
+
+        progress:
+          5,
+
+        message:
+          "Video uploaded successfully",
+
+        originalName:
+          req.file.originalname,
+
+        fileName:
+          req.file.filename,
+
+        filePath:
+          req.file.path,
+
+        mimeType:
+          req.file.mimetype,
+
+        size:
+          req.file.size,
+
+        createdAt:
+          now(),
+
+        updatedAt:
+          now(),
+
+        result:
+          null,
+
+        error:
+          null
+      };
+
+      jobs.set(
+        jobId,
+        job
+      );
+
+      console.log(
+        `[UPLOAD ${jobId}] ${req.file.originalname}`
+      );
+
+      return res.json({
+        ok: true,
+
+        jobId,
+
+        status:
+          job.status,
+
+        progress:
+          job.progress,
+
+        file: {
+          name:
+            job.originalName,
+
+          mimeType:
+            job.mimeType,
+
+          size:
+            job.size
+        }
+      });
+    } catch (error) {
+      console.error(
+        "Upload error:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          ok: false,
+          error:
+            getErrorMessage(
+              error
+            ) ||
+            "Upload failed"
+        });
+    }
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| JOB STATUS
+|--------------------------------------------------------------------------
+*/
 
 app.get(
   "/api/jobs/:jobId",
   (req, res) => {
-
-    const {
-      jobId
-    } = req.params;
-
     const job =
-      jobs.get(jobId);
+      jobs.get(
+        req.params.jobId
+      );
 
     if (!job) {
-      return res.status(404).json({
-        ok: false,
-        error:
-          "Job not found",
-        jobId
-      });
+      return res
+        .status(404)
+        .json({
+          ok: false,
+          error:
+            "Job not found"
+        });
     }
 
-    return res.status(200).json({
+    return res.json({
       ok: true,
-      job:
-        publicJob(job)
+
+      job: {
+        id:
+          job.id,
+
+        status:
+          job.status,
+
+        progress:
+          job.progress,
+
+        message:
+          job.message,
+
+        originalName:
+          job.originalName,
+
+        mimeType:
+          job.mimeType,
+
+        size:
+          job.size,
+
+        createdAt:
+          job.createdAt,
+
+        updatedAt:
+          job.updatedAt,
+
+        error:
+          job.error,
+
+        result:
+          job.result
+      }
     });
   }
 );
 
-/* =========================================================
-   START ANALYSIS WORKER FROM JOB
-========================================================= */
-
-async function startAnalysisJob(
-  job
-) {
-
-  try {
-
-    await analyzeVideo(
-      job
-    );
-
-  } catch (error) {
-
-    console.error(
-      "AI ANALYSIS ERROR:",
-      error
-    );
-
-    job.status =
-      "failed";
-
-    job.progress = 0;
-
-    job.stage =
-      "AI analysis failed";
-
-    job.error =
-      error?.message ||
-      "AI analysis failed";
-
-    job.updatedAt =
-      new Date().toISOString();
-
-  }
-}
-
-/* =========================================================
-   ANALYSIS TRIGGER
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| START ANALYSIS
+|--------------------------------------------------------------------------
+*/
 
 app.post(
   "/api/analyze/:jobId/start",
   async (req, res) => {
-
-    const {
-      jobId
-    } = req.params;
-
     const job =
-      jobs.get(jobId);
+      jobs.get(
+        req.params.jobId
+      );
 
     if (!job) {
-      return res.status(404).json({
-        ok: false,
-        error:
-          "Job not found"
-      });
+      return res
+        .status(404)
+        .json({
+          ok: false,
+          error:
+            "Job not found"
+        });
     }
 
-    if (!GEMINI_API_KEY) {
-      return res.status(503).json({
-        ok: false,
-        error:
-          "Gemini API is not configured",
-        message:
-          "Set GEMINI_API_KEY in Render"
-      });
-    }
+    /*
+     * Duplicate protection
+     */
 
     if (
       job.status ===
-        "analyzing"
-    ) {
-      return res.status(409).json({
-        ok: false,
-        error:
-          "Analysis already running",
-        job:
-          publicJob(job)
-      });
-    }
-
-    if (
+        "analyzing" ||
       job.status ===
-        "completed"
+        "processing" ||
+      job.status ===
+        "waiting" ||
+      job.status ===
+        "queued"
     ) {
-      return res.status(200).json({
+      return res.json({
         ok: true,
+
+        alreadyRunning:
+          true,
+
+        message:
+          "Analysis is already running",
+
+        jobId:
+          job.id
+      });
+    }
+
+    /*
+     * Completed protection
+     */
+
+    if (
+      job.status ===
+      "completed"
+    ) {
+      return res.json({
+        ok: true,
+
+        alreadyCompleted:
+          true,
+
         message:
           "Analysis already completed",
-        job:
-          publicJob(job)
+
+        jobId:
+          job.id,
+
+        result:
+          job.result
       });
     }
 
-    job.status =
-      "analyzing";
+    /*
+     * Reset failed job
+     */
 
-    job.progress = 15;
+    updateJob(job.id, {
+      status:
+        "queued",
 
-    job.stage =
-      "Starting AI analysis";
-
-    job.error = null;
-
-    job.updatedAt =
-      new Date().toISOString();
-
-    startAnalysisJob(
-      job
-    );
-
-    return res.status(202).json({
-      ok: true,
+      progress:
+        7,
 
       message:
-        "AI analysis started",
+        "Analysis queued...",
 
-      job:
-        publicJob(job)
+      error:
+        null
     });
+
+    res.json({
+      ok: true,
+
+      jobId:
+        job.id,
+
+      status:
+        "queued",
+
+      rateLimitProtection:
+        true
+    });
+
+    /*
+     * Background analysis
+     */
+
+    analyzeVideo(job)
+      .catch(
+        (error) => {
+          console.error(
+            `[JOB ${job.id}] Analysis error`,
+            error
+          );
+
+          failJob(
+            job.id,
+            error
+          );
+        }
+      );
   }
 );
 
-/* =========================================================
-   ERROR HANDLER
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| MULTER / GLOBAL ERROR
+|--------------------------------------------------------------------------
+*/
 
 app.use(
-  (err, req, res, next) => {
-
+  (
+    err,
+    req,
+    res,
+    next
+  ) => {
     console.error(
-      "SERVER ERROR:",
+      "Global error:",
       err
     );
 
     if (
-      res.headersSent
+      err instanceof
+        multer.MulterError &&
+      err.code ===
+        "LIMIT_FILE_SIZE"
     ) {
-      return next(err);
+      return res
+        .status(413)
+        .json({
+          ok: false,
+          error:
+            "Video is too large. Maximum size is 500 MB."
+        });
     }
 
-    return res.status(500).json({
-      ok: false,
-      error:
-        err?.message ||
-        "Internal server error"
-    });
+    return res
+      .status(500)
+      .json({
+        ok: false,
+        error:
+          getErrorMessage(
+            err
+          ) ||
+          "Internal server error"
+      });
   }
 );
 
-/* =========================================================
-   404
-========================================================= */
-
-app.use(
-  (req, res) => {
-
-    return res.status(404).json({
-      ok: false,
-      error:
-        "Route not found",
-      path:
-        req.path
-    });
-  }
-);
-
-/* =========================================================
-   START SERVER
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| START SERVER
+|--------------------------------------------------------------------------
+*/
 
 app.listen(
   PORT,
-  "0.0.0.0",
   () => {
-
     console.log("");
     console.log(
       "=========================================="
     );
     console.log(
-      "       AUNG RECAP PRO V8.1.0"
+      "       AUNG RECAP PRO V8.1.2"
     );
     console.log(
       "=========================================="
@@ -1098,6 +1382,12 @@ app.listen(
     );
     console.log(
       "AI ANALYSIS: READY"
+    );
+    console.log(
+      "RATE LIMIT PROTECTION: ENABLED"
+    );
+    console.log(
+      `MAX AI RETRIES: ${MAX_AI_RETRIES}`
     );
     console.log(
       "MAX VIDEO: 500 MB"
