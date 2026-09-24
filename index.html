@@ -1,1 +1,2324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
 
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <meta
+    name="theme-color"
+    content="#0b0d10"
+  >
+
+  <title>AUNG RECAP PRO V8</title>
+
+  <style>
+    :root {
+      --bg: #0b0d10;
+      --panel: #11151a;
+      --panel-2: #161b21;
+      --border: rgba(255,255,255,.08);
+      --text: #f4f5f7;
+      --muted: #8e98a5;
+      --gold: #d8a84e;
+      --gold-light: #f0c76b;
+      --green: #36d399;
+      --red: #ff647c;
+      --blue: #6ea8fe;
+      --sidebar: 250px;
+      --radius: 18px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(
+          circle at 70% 0%,
+          rgba(216,168,78,.08),
+          transparent 30%
+        ),
+        var(--bg);
+      color: var(--text);
+      font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      min-height: 100vh;
+    }
+
+    /* =========================
+       SIDEBAR
+    ========================= */
+
+    .sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: var(--sidebar);
+      padding: 22px 14px;
+      background: rgba(12,15,19,.96);
+      border-right: 1px solid var(--border);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 8px 10px 26px;
+    }
+
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(
+          145deg,
+          var(--gold-light),
+          var(--gold)
+        );
+      color: #111;
+      font-weight: 900;
+      font-size: 14px;
+      box-shadow:
+        0 8px 24px rgba(216,168,78,.16);
+    }
+
+    .brand-text strong {
+      display: block;
+      font-size: 14px;
+      letter-spacing: .8px;
+    }
+
+    .brand-text span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      margin-top: 3px;
+      letter-spacing: .8px;
+    }
+
+    .nav {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .nav-btn {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: #9da6b1;
+      padding: 12px 13px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-align: left;
+      transition: .18s ease;
+    }
+
+    .nav-btn:hover {
+      background: rgba(255,255,255,.045);
+      color: #fff;
+    }
+
+    .nav-btn.active {
+      background:
+        linear-gradient(
+          90deg,
+          rgba(216,168,78,.16),
+          rgba(216,168,78,.04)
+        );
+      color: var(--gold-light);
+      border: 1px solid rgba(216,168,78,.12);
+    }
+
+    .nav-icon {
+      width: 21px;
+      text-align: center;
+      font-size: 15px;
+    }
+
+    .sidebar-bottom {
+      margin-top: auto;
+    }
+
+    .system-card {
+      padding: 13px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.025);
+      border-radius: 14px;
+    }
+
+    .system-label {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .system-status {
+      margin-top: 9px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 12px rgba(54,211,153,.5);
+    }
+
+    /* =========================
+       MAIN
+    ========================= */
+
+    .main {
+      margin-left: var(--sidebar);
+      min-height: 100vh;
+    }
+
+    .topbar {
+      height: 72px;
+      padding: 0 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: rgba(11,13,16,.72);
+      backdrop-filter: blur(18px);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .mobile-brand {
+      display: none;
+    }
+
+    .topbar-title {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .version {
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .health-pill {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: rgba(54,211,153,.07);
+      border: 1px solid rgba(54,211,153,.14);
+      color: #9be9c9;
+      font-size: 10px;
+    }
+
+    .health-pill.error {
+      background: rgba(255,100,124,.07);
+      border-color: rgba(255,100,124,.15);
+      color: #ff9cac;
+    }
+
+    .content {
+      max-width: 1250px;
+      margin: 0 auto;
+      padding: 42px 34px 70px;
+    }
+
+    /* =========================
+       HERO
+    ========================= */
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 28px;
+      align-items: stretch;
+    }
+
+    .hero-copy {
+      padding: 10px 0;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--gold-light);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.6px;
+      font-weight: 700;
+      margin-bottom: 15px;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 20px;
+      height: 1px;
+      background: var(--gold);
+    }
+
+    h1 {
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.02;
+      letter-spacing: -2px;
+      max-width: 720px;
+    }
+
+    .hero-copy p {
+      max-width: 650px;
+      color: var(--muted);
+      line-height: 1.75;
+      margin-top: 18px;
+      font-size: 14px;
+    }
+
+    .feature-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 23px;
+    }
+
+    .feature-chip {
+      padding: 8px 11px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.025);
+      color: #b8c0ca;
+      border-radius: 999px;
+      font-size: 10px;
+    }
+
+    .hero-panel {
+      min-height: 250px;
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      background:
+        linear-gradient(
+          145deg,
+          rgba(255,255,255,.045),
+          rgba(255,255,255,.015)
+        );
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero-panel::after {
+      content: "";
+      position: absolute;
+      width: 180px;
+      height: 180px;
+      right: -70px;
+      bottom: -70px;
+      border-radius: 50%;
+      background: rgba(216,168,78,.07);
+      filter: blur(2px);
+    }
+
+    .hero-panel-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+    }
+
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .pipeline-item {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 10px 12px;
+      background: rgba(0,0,0,.18);
+      border: 1px solid rgba(255,255,255,.055);
+      border-radius: 11px;
+      font-size: 11px;
+    }
+
+    .pipeline-num {
+      width: 23px;
+      height: 23px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: rgba(216,168,78,.1);
+      color: var(--gold-light);
+      font-size: 9px;
+      font-weight: 800;
+    }
+
+    /* =========================
+       WORKSPACE
+    ========================= */
+
+    .section {
+      margin-top: 38px;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      margin-bottom: 15px;
+    }
+
+    .section-head h2 {
+      font-size: 18px;
+      letter-spacing: -.4px;
+    }
+
+    .section-head p {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 5px;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 1fr 330px;
+      gap: 18px;
+    }
+
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    /* =========================
+       UPLOAD
+    ========================= */
+
+    .upload-panel {
+      padding: 22px;
+    }
+
+    .drop-zone {
+      min-height: 300px;
+      border: 1px dashed rgba(216,168,78,.32);
+      border-radius: 16px;
+      background:
+        radial-gradient(
+          circle at center,
+          rgba(216,168,78,.045),
+          transparent 65%
+        ),
+        rgba(255,255,255,.012);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 30px;
+      transition: .2s ease;
+    }
+
+    .drop-zone.dragover {
+      border-color: var(--gold);
+      background:
+        radial-gradient(
+          circle at center,
+          rgba(216,168,78,.1),
+          transparent 65%
+        );
+      transform: scale(1.005);
+    }
+
+    .upload-icon {
+      width: 58px;
+      height: 58px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      background: rgba(216,168,78,.09);
+      border: 1px solid rgba(216,168,78,.15);
+      color: var(--gold-light);
+      font-size: 23px;
+      margin-bottom: 17px;
+    }
+
+    .drop-zone h3 {
+      font-size: 16px;
+    }
+
+    .drop-zone p {
+      max-width: 400px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.6;
+      margin-top: 8px;
+    }
+
+    .browse-btn {
+      margin-top: 18px;
+      padding: 11px 17px;
+      border-radius: 11px;
+      border: 1px solid rgba(216,168,78,.3);
+      background: rgba(216,168,78,.1);
+      color: var(--gold-light);
+      font-weight: 700;
+      font-size: 11px;
+    }
+
+    .browse-btn:hover {
+      background: rgba(216,168,78,.17);
+    }
+
+    #videoInput {
+      display: none;
+    }
+
+    .selected-file {
+      display: none;
+      margin-top: 14px;
+      padding: 13px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel-2);
+    }
+
+    .selected-file.show {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .file-info {
+      min-width: 0;
+    }
+
+    .file-name {
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .file-meta {
+      color: var(--muted);
+      font-size: 10px;
+      margin-top: 4px;
+    }
+
+    .remove-btn {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .remove-btn:hover {
+      color: var(--red);
+    }
+
+    /* =========================
+       SETTINGS PANEL
+    ========================= */
+
+    .settings-panel {
+      padding: 20px;
+    }
+
+    .setting-group {
+      margin-bottom: 19px;
+    }
+
+    .setting-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .setting-label {
+      display: block;
+      color: #cbd1d9;
+      font-size: 11px;
+      margin-bottom: 8px;
+    }
+
+    .setting-control {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: #0d1014;
+      color: #e8eaed;
+      padding: 11px 12px;
+      border-radius: 10px;
+      outline: none;
+      font-size: 11px;
+    }
+
+    .setting-control:focus {
+      border-color: rgba(216,168,78,.45);
+    }
+
+    .setting-note {
+      color: var(--muted);
+      font-size: 9px;
+      line-height: 1.5;
+      margin-top: 6px;
+    }
+
+    /* =========================
+       ACTION
+    ========================= */
+
+    .action-bar {
+      margin-top: 17px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 15px;
+      padding: 17px 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--panel);
+    }
+
+    .action-info strong {
+      display: block;
+      font-size: 12px;
+    }
+
+    .action-info span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      margin-top: 4px;
+    }
+
+    .primary-btn {
+      border: 0;
+      border-radius: 11px;
+      padding: 12px 20px;
+      background:
+        linear-gradient(
+          135deg,
+          var(--gold-light),
+          var(--gold)
+        );
+      color: #111;
+      font-weight: 900;
+      font-size: 11px;
+      box-shadow:
+        0 10px 28px rgba(216,168,78,.13);
+      transition: .18s ease;
+    }
+
+    .primary-btn:hover {
+      transform: translateY(-1px);
+      box-shadow:
+        0 14px 34px rgba(216,168,78,.2);
+    }
+
+    .primary-btn:disabled {
+      cursor: not-allowed;
+      opacity: .45;
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* =========================
+       PROGRESS
+    ========================= */
+
+    .progress-panel {
+      display: none;
+      margin-top: 17px;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--panel);
+    }
+
+    .progress-panel.show {
+      display: block;
+    }
+
+    .progress-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 15px;
+      font-size: 11px;
+    }
+
+    .progress-percent {
+      color: var(--gold-light);
+      font-weight: 800;
+    }
+
+    .progress-track {
+      height: 7px;
+      border-radius: 999px;
+      background: #080a0d;
+      overflow: hidden;
+      margin-top: 11px;
+    }
+
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      background:
+        linear-gradient(
+          90deg,
+          var(--gold),
+          var(--gold-light)
+        );
+      border-radius: inherit;
+      transition: width .15s linear;
+    }
+
+    .progress-message {
+      color: var(--muted);
+      font-size: 10px;
+      margin-top: 8px;
+    }
+
+    /* =========================
+       SUCCESS
+    ========================= */
+
+    .result-panel {
+      display: none;
+      margin-top: 17px;
+      padding: 18px;
+      border: 1px solid rgba(54,211,153,.15);
+      border-radius: 14px;
+      background: rgba(54,211,153,.035);
+    }
+
+    .result-panel.show {
+      display: block;
+    }
+
+    .result-title {
+      color: #9be9c9;
+      font-weight: 800;
+      font-size: 12px;
+    }
+
+    .job-box {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 9px;
+      background: rgba(0,0,0,.18);
+      color: #c8d0d8;
+      font-family: monospace;
+      font-size: 9px;
+      word-break: break-all;
+    }
+
+    /* =========================
+       TOAST
+    ========================= */
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translate(-50%, 20px);
+      min-width: 260px;
+      max-width: calc(100vw - 30px);
+      padding: 13px 16px;
+      border-radius: 12px;
+      background: #171c22;
+      border: 1px solid var(--border);
+      color: #e9edf1;
+      font-size: 11px;
+      text-align: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: .22s ease;
+      z-index: 500;
+      box-shadow: 0 18px 50px rgba(0,0,0,.35);
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
+    .toast.error {
+      border-color: rgba(255,100,124,.2);
+      color: #ffb0bc;
+    }
+
+    /* =========================
+       FOOTER
+    ========================= */
+
+    .footer {
+      margin-top: 40px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      color: #68717c;
+      font-size: 9px;
+      line-height: 1.6;
+      text-align: center;
+    }
+
+    /* =========================
+       MOBILE
+    ========================= */
+
+    .mobile-menu-btn {
+      display: none;
+      border: 0;
+      background: transparent;
+      color: #fff;
+      font-size: 22px;
+    }
+
+    @media (max-width: 900px) {
+
+      :root {
+        --sidebar: 0px;
+      }
+
+      .sidebar {
+        transform: translateX(-100%);
+        transition: transform .22s ease;
+        width: 260px;
+        box-shadow: 20px 0 60px rgba(0,0,0,.35);
+      }
+
+      .sidebar.open {
+        transform: translateX(0);
+      }
+
+      .main {
+        margin-left: 0;
+      }
+
+      .mobile-menu-btn {
+        display: block;
+      }
+
+      .mobile-brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+
+      .mobile-brand-mark {
+        width: 30px;
+        height: 30px;
+        border-radius: 9px;
+        display: grid;
+        place-items: center;
+        background: var(--gold);
+        color: #111;
+        font-size: 10px;
+        font-weight: 900;
+      }
+
+      .mobile-brand span {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: .7px;
+      }
+
+      .topbar {
+        padding: 0 18px;
+      }
+
+      .topbar-title {
+        display: none;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .content {
+        padding: 30px 18px 55px;
+      }
+    }
+
+    @media (max-width: 560px) {
+
+      h1 {
+        font-size: 36px;
+      }
+
+      .hero-panel {
+        min-height: 230px;
+      }
+
+      .drop-zone {
+        min-height: 260px;
+        padding: 22px;
+      }
+
+      .action-bar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .primary-btn {
+        width: 100%;
+      }
+
+      .version {
+        display: none;
+      }
+
+      .health-pill {
+        font-size: 9px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="app">
+
+    <!-- =========================
+         SIDEBAR
+    ========================== -->
+
+    <aside class="sidebar" id="sidebar">
+
+      <div class="brand">
+
+        <div class="brand-mark">
+          AR
+        </div>
+
+        <div class="brand-text">
+          <strong>AUNG RECAP PRO</strong>
+          <span>AI RECAP STUDIO</span>
+        </div>
+
+      </div>
+
+
+      <nav class="nav">
+
+        <button
+          class="nav-btn active"
+          data-section="create"
+        >
+          <span class="nav-icon">✦</span>
+          <span>Create</span>
+        </button>
+
+        <button
+          class="nav-btn"
+          data-section="studio"
+        >
+          <span class="nav-icon">▣</span>
+          <span>Studio</span>
+        </button>
+
+        <button
+          class="nav-btn"
+          data-section="projects"
+        >
+          <span class="nav-icon">◫</span>
+          <span>Projects</span>
+        </button>
+
+        <button
+          class="nav-btn"
+          data-section="voice"
+        >
+          <span class="nav-icon">◉</span>
+          <span>AI Voice</span>
+        </button>
+
+        <button
+          class="nav-btn"
+          data-section="subtitles"
+        >
+          <span class="nav-icon">T</span>
+          <span>Subtitles</span>
+        </button>
+
+        <button
+          class="nav-btn"
+          data-section="settings"
+        >
+          <span class="nav-icon">⚙</span>
+          <span>Settings</span>
+        </button>
+
+      </nav>
+
+
+      <div class="sidebar-bottom">
+
+        <div class="system-card">
+
+          <div class="system-label">
+            Backend
+          </div>
+
+          <div class="system-status">
+            <span
+              class="status-dot"
+              id="sidebarStatusDot"
+            ></span>
+
+            <span id="sidebarStatusText">
+              Checking...
+            </span>
+          </div>
+
+        </div>
+
+      </div>
+
+    </aside>
+
+
+    <!-- =========================
+         MAIN
+    ========================== -->
+
+    <main class="main">
+
+      <header class="topbar">
+
+        <div class="mobile-brand">
+
+          <button
+            class="mobile-menu-btn"
+            id="mobileMenuBtn"
+            aria-label="Open menu"
+          >
+            ☰
+          </button>
+
+          <div class="mobile-brand-mark">
+            AR
+          </div>
+
+          <span>
+            AUNG RECAP PRO
+          </span>
+
+        </div>
+
+        <div class="topbar-title">
+          AI-powered Myanmar Recap Studio
+        </div>
+
+        <div class="topbar-right">
+
+          <div class="version">
+            V8.0.1
+          </div>
+
+          <div
+            class="health-pill"
+            id="healthPill"
+          >
+            <span
+              class="status-dot"
+              id="healthDot"
+            ></span>
+
+            <span id="healthText">
+              Checking
+            </span>
+          </div>
+
+        </div>
+
+      </header>
+
+
+      <div class="content">
+
+        <!-- =========================
+             HERO
+        ========================== -->
+
+        <section class="hero">
+
+          <div class="hero-copy">
+
+            <div class="eyebrow">
+              AI RECAP WORKSPACE
+            </div>
+
+            <h1>
+              Turn your video into a
+              Myanmar recap
+            </h1>
+
+            <p>
+              Upload your video and prepare it
+              for the AUNG RECAP PRO processing
+              pipeline — script, Myanmar voice,
+              subtitles and final rendering
+            </p>
+
+            <div class="feature-row">
+
+              <span class="feature-chip">
+                Video Understanding
+              </span>
+
+              <span class="feature-chip">
+                Myanmar Recap
+              </span>
+
+              <span class="feature-chip">
+                AI Voice
+              </span>
+
+              <span class="feature-chip">
+                Subtitles
+              </span>
+
+              <span class="feature-chip">
+                MP4 Render
+              </span>
+
+            </div>
+
+          </div>
+
+
+          <div class="hero-panel">
+
+            <div class="hero-panel-title">
+              Processing Pipeline
+            </div>
+
+            <div class="pipeline">
+
+              <div class="pipeline-item">
+                <span class="pipeline-num">01</span>
+                <span>Video Upload</span>
+              </div>
+
+              <div class="pipeline-item">
+                <span class="pipeline-num">02</span>
+                <span>AI Understanding</span>
+              </div>
+
+              <div class="pipeline-item">
+                <span class="pipeline-num">03</span>
+                <span>Myanmar Recap Script</span>
+              </div>
+
+              <div class="pipeline-item">
+                <span class="pipeline-num">04</span>
+                <span>Voice + Subtitles</span>
+              </div>
+
+              <div class="pipeline-item">
+                <span class="pipeline-num">05</span>
+                <span>Final MP4 Render</span>
+              </div>
+
+            </div>
+
+          </div>
+
+        </section>
+
+
+        <!-- =========================
+             CREATE
+        ========================== -->
+
+        <section class="section">
+
+          <div class="section-head">
+
+            <div>
+              <h2>
+                Create Recap
+              </h2>
+
+              <p>
+                Start by uploading your source video
+              </p>
+            </div>
+
+          </div>
+
+
+          <div class="workspace">
+
+            <!-- UPLOAD PANEL -->
+
+            <div class="panel upload-panel">
+
+              <div
+                class="drop-zone"
+                id="dropZone"
+              >
+
+                <div class="upload-icon">
+                  ↑
+                </div>
+
+                <h3>
+                  Drop your video here
+                </h3>
+
+                <p>
+                  MP4, MOV, WEBM, MKV, AVI,
+                  MPEG and OGG are supported
+                </p>
+
+                <p>
+                  Maximum file size: 500 MB
+                </p>
+
+                <button
+                  type="button"
+                  class="browse-btn"
+                  id="browseBtn"
+                >
+                  Choose Video
+                </button>
+
+                <input
+                  id="videoInput"
+                  type="file"
+                  accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/ogg"
+                >
+
+              </div>
+
+
+              <div
+                class="selected-file"
+                id="selectedFile"
+              >
+
+                <div class="file-info">
+
+                  <div
+                    class="file-name"
+                    id="fileName"
+                  >
+                    -
+                  </div>
+
+                  <div
+                    class="file-meta"
+                    id="fileMeta"
+                  >
+                    -
+                  </div>
+
+                </div>
+
+                <button
+                  type="button"
+                  class="remove-btn"
+                  id="removeBtn"
+                  aria-label="Remove selected video"
+                >
+                  ×
+                </button>
+
+              </div>
+
+
+              <div
+                class="progress-panel"
+                id="progressPanel"
+              >
+
+                <div class="progress-top">
+
+                  <span id="progressTitle">
+                    Uploading video
+                  </span>
+
+                  <span
+                    class="progress-percent"
+                    id="progressPercent"
+                  >
+                    0%
+                  </span>
+
+                </div>
+
+                <div class="progress-track">
+
+                  <div
+                    class="progress-fill"
+                    id="progressFill"
+                  ></div>
+
+                </div>
+
+                <div
+                  class="progress-message"
+                  id="progressMessage"
+                >
+                  Preparing upload...
+                </div>
+
+              </div>
+
+
+              <div
+                class="result-panel"
+                id="resultPanel"
+              >
+
+                <div class="result-title">
+                  ✓ VIDEO READY
+                </div>
+
+                <div
+                  class="job-box"
+                  id="jobIdBox"
+                >
+                  Job ID
+                </div>
+
+              </div>
+
+            </div>
+
+
+            <!-- SETTINGS PANEL -->
+
+            <div class="panel settings-panel">
+
+              <div class="setting-group">
+
+                <label
+                  class="setting-label"
+                  for="sourceLanguage"
+                >
+                  Source Language
+                </label>
+
+                <select
+                  class="setting-control"
+                  id="sourceLanguage"
+                >
+
+                  <option value="auto">
+                    Auto Detect
+                  </option>
+
+                  <option value="en">
+                    English
+                  </option>
+
+                  <option value="my">
+                    Myanmar
+                  </option>
+
+                  <option value="th">
+                    Thai
+                  </option>
+
+                  <option value="ko">
+                    Korean
+                  </option>
+
+                  <option value="ja">
+                    Japanese
+                  </option>
+
+                  <option value="zh">
+                    Chinese
+                  </option>
+
+                </select>
+
+              </div>
+
+
+              <div class="setting-group">
+
+                <label
+                  class="setting-label"
+                  for="outputLanguage"
+                >
+                  Output Language
+                </label>
+
+                <select
+                  class="setting-control"
+                  id="outputLanguage"
+                >
+
+                  <option value="my">
+                    Myanmar
+                  </option>
+
+                  <option value="en">
+                    English
+                  </option>
+
+                </select>
+
+              </div>
+
+
+              <div class="setting-group">
+
+                <label
+                  class="setting-label"
+                  for="videoFormat"
+                >
+                  Output Format
+                </label>
+
+                <select
+                  class="setting-control"
+                  id="videoFormat"
+                >
+
+                  <option value="original">
+                    Original
+                  </option>
+
+                  <option value="16:9">
+                    16:9 Landscape
+                  </option>
+
+                  <option value="9:16">
+                    9:16 Vertical
+                  </option>
+
+                  <option value="1:1">
+                    1:1 Square
+                  </option>
+
+                  <option value="4:5">
+                    4:5 Social
+                  </option>
+
+                </select>
+
+              </div>
+
+
+              <div class="setting-group">
+
+                <label
+                  class="setting-label"
+                  for="recapStyle"
+                >
+                  Recap Style
+                </label>
+
+                <select
+                  class="setting-control"
+                  id="recapStyle"
+                >
+
+                  <option value="cinematic">
+                    Cinematic
+                  </option>
+
+                  <option value="story">
+                    Story Focused
+                  </option>
+
+                  <option value="fast">
+                    Fast Recap
+                  </option>
+
+                  <option value="detailed">
+                    Detailed
+                  </option>
+
+                </select>
+
+                <div class="setting-note">
+                  AI processing options will be
+                  connected in the next V8 module
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+
+          <!-- ACTION BAR -->
+
+          <div class="action-bar">
+
+            <div class="action-info">
+
+              <strong>
+                Ready to upload
+              </strong>
+
+              <span id="actionStatus">
+                Choose a video to begin
+              </span>
+
+            </div>
+
+            <button
+              type="button"
+              class="primary-btn"
+              id="uploadBtn"
+              disabled
+            >
+              Upload Video
+            </button>
+
+          </div>
+
+        </section>
+
+
+        <footer class="footer">
+
+          AUNG RECAP PRO V8.0.1
+          · AI Recap Studio
+
+          <br>
+
+          Upload only videos you own or have
+          permission to process
+
+        </footer>
+
+      </div>
+
+    </main>
+
+  </div>
+
+
+  <!-- TOAST -->
+
+  <div
+    class="toast"
+    id="toast"
+  >
+    Message
+  </div>
+
+
+  <script>
+
+    /* =====================================
+       CONFIG
+    ===================================== */
+
+    const API_BASE =
+      "https://aung-recap-pro-v8.onrender.com";
+
+
+    /* =====================================
+       ELEMENTS
+    ===================================== */
+
+    const sidebar =
+      document.getElementById("sidebar");
+
+    const mobileMenuBtn =
+      document.getElementById("mobileMenuBtn");
+
+    const browseBtn =
+      document.getElementById("browseBtn");
+
+    const videoInput =
+      document.getElementById("videoInput");
+
+    const dropZone =
+      document.getElementById("dropZone");
+
+    const selectedFile =
+      document.getElementById("selectedFile");
+
+    const fileName =
+      document.getElementById("fileName");
+
+    const fileMeta =
+      document.getElementById("fileMeta");
+
+    const removeBtn =
+      document.getElementById("removeBtn");
+
+    const uploadBtn =
+      document.getElementById("uploadBtn");
+
+    const progressPanel =
+      document.getElementById("progressPanel");
+
+    const progressFill =
+      document.getElementById("progressFill");
+
+    const progressPercent =
+      document.getElementById("progressPercent");
+
+    const progressMessage =
+      document.getElementById("progressMessage");
+
+    const progressTitle =
+      document.getElementById("progressTitle");
+
+    const resultPanel =
+      document.getElementById("resultPanel");
+
+    const jobIdBox =
+      document.getElementById("jobIdBox");
+
+    const actionStatus =
+      document.getElementById("actionStatus");
+
+    const healthPill =
+      document.getElementById("healthPill");
+
+    const healthText =
+      document.getElementById("healthText");
+
+    const healthDot =
+      document.getElementById("healthDot");
+
+    const sidebarStatusText =
+      document.getElementById("sidebarStatusText");
+
+    const sidebarStatusDot =
+      document.getElementById("sidebarStatusDot");
+
+    const toast =
+      document.getElementById("toast");
+
+
+    /* =====================================
+       STATE
+    ===================================== */
+
+    let selectedVideo = null;
+
+    const MAX_FILE_SIZE =
+      500 * 1024 * 1024;
+
+    const allowedTypes = new Set([
+      "video/mp4",
+      "video/quicktime",
+      "video/webm",
+      "video/x-matroska",
+      "video/x-msvideo",
+      "video/mpeg",
+      "video/ogg"
+    ]);
+
+
+    /* =====================================
+       HELPERS
+    ===================================== */
+
+    function showToast(message, isError = false) {
+
+      toast.textContent = message;
+
+      toast.classList.toggle(
+        "error",
+        isError
+      );
+
+      toast.classList.add("show");
+
+      window.clearTimeout(
+        showToast.timer
+      );
+
+      showToast.timer =
+        window.setTimeout(() => {
+          toast.classList.remove("show");
+        }, 3200);
+    }
+
+
+    function formatBytes(bytes) {
+
+      if (!Number.isFinite(bytes)) {
+        return "0 B";
+      }
+
+      if (bytes < 1024) {
+        return `${bytes} B`;
+      }
+
+      if (bytes < 1024 * 1024) {
+        return `${(
+          bytes / 1024
+        ).toFixed(1)} KB`;
+      }
+
+      if (bytes < 1024 * 1024 * 1024) {
+        return `${(
+          bytes / (1024 * 1024)
+        ).toFixed(1)} MB`;
+      }
+
+      return `${(
+        bytes / (1024 * 1024 * 1024)
+      ).toFixed(2)} GB`;
+    }
+
+
+    function setProgress(value, message) {
+
+      const safeValue =
+        Math.max(
+          0,
+          Math.min(
+            100,
+            Number(value) || 0
+          )
+        );
+
+      progressFill.style.width =
+        `${safeValue}%`;
+
+      progressPercent.textContent =
+        `${Math.round(safeValue)}%`;
+
+      if (message) {
+        progressMessage.textContent =
+          message;
+      }
+    }
+
+
+    function resetProgress() {
+
+      progressPanel.classList.remove("show");
+
+      setProgress(
+        0,
+        "Preparing upload..."
+      );
+
+      progressTitle.textContent =
+        "Uploading video";
+    }
+
+
+    /* =====================================
+       FILE VALIDATION
+    ===================================== */
+
+    function validateVideo(file) {
+
+      if (!file) {
+        return "Please choose a video";
+      }
+
+      if (!allowedTypes.has(file.type)) {
+        return "Unsupported video format";
+      }
+
+      if (file.size > MAX_FILE_SIZE) {
+        return "Video is larger than 500 MB";
+      }
+
+      if (file.size <= 0) {
+        return "The selected video is empty";
+      }
+
+      return null;
+    }
+
+
+    /* =====================================
+       SELECT VIDEO
+    ===================================== */
+
+    function selectVideo(file) {
+
+      const error =
+        validateVideo(file);
+
+      if (error) {
+
+        showToast(
+          error,
+          true
+        );
+
+        clearVideo();
+
+        return;
+      }
+
+      selectedVideo = file;
+
+      fileName.textContent =
+        file.name;
+
+      fileMeta.textContent =
+        `${formatBytes(file.size)} · ${file.type || "video"}`;
+
+      selectedFile.classList.add("show");
+
+      uploadBtn.disabled = false;
+
+      actionStatus.textContent =
+        "Video selected and ready to upload";
+
+      resultPanel.classList.remove("show");
+
+      resetProgress();
+    }
+
+
+    function clearVideo() {
+
+      selectedVideo = null;
+
+      videoInput.value = "";
+
+      selectedFile.classList.remove(
+        "show"
+      );
+
+      uploadBtn.disabled = true;
+
+      actionStatus.textContent =
+        "Choose a video to begin";
+
+      resultPanel.classList.remove(
+        "show"
+      );
+
+      resetProgress();
+    }
+
+
+    /* =====================================
+       FILE INPUT
+    ===================================== */
+
+    browseBtn.addEventListener(
+      "click",
+      () => {
+        videoInput.click();
+      }
+    );
+
+
+    videoInput.addEventListener(
+      "change",
+      () => {
+
+        const file =
+          videoInput.files &&
+          videoInput.files[0];
+
+        selectVideo(file);
+      }
+    );
+
+
+    removeBtn.addEventListener(
+      "click",
+      clearVideo
+    );
+
+
+    /* =====================================
+       DRAG & DROP
+    ===================================== */
+
+    [
+      "dragenter",
+      "dragover"
+    ].forEach(eventName => {
+
+      dropZone.addEventListener(
+        eventName,
+        event => {
+
+          event.preventDefault();
+          event.stopPropagation();
+
+          dropZone.classList.add(
+            "dragover"
+          );
+        }
+      );
+
+    });
+
+
+    [
+      "dragleave",
+      "drop"
+    ].forEach(eventName => {
+
+      dropZone.addEventListener(
+        eventName,
+        event => {
+
+          event.preventDefault();
+          event.stopPropagation();
+
+          dropZone.classList.remove(
+            "dragover"
+          );
+        }
+      );
+
+    });
+
+
+    dropZone.addEventListener(
+      "drop",
+      event => {
+
+        const files =
+          event.dataTransfer &&
+          event.dataTransfer.files;
+
+        if (!files || !files.length) {
+          return;
+        }
+
+        selectVideo(files[0]);
+      }
+    );
+
+
+    /* =====================================
+       UPLOAD
+    ===================================== */
+
+    function uploadVideo() {
+
+      if (!selectedVideo) {
+
+        showToast(
+          "Please choose a video first",
+          true
+        );
+
+        return;
+      }
+
+      uploadBtn.disabled = true;
+
+      progressPanel.classList.add(
+        "show"
+      );
+
+      resultPanel.classList.remove(
+        "show"
+      );
+
+      setProgress(
+        0,
+        "Preparing upload..."
+      );
+
+      actionStatus.textContent =
+        "Uploading video to AUNG RECAP PRO";
+
+
+      const formData =
+        new FormData();
+
+      formData.append(
+        "video",
+        selectedVideo
+      );
+
+
+      const xhr =
+        new XMLHttpRequest();
+
+
+      xhr.open(
+        "POST",
+        `${API_BASE}/api/upload`,
+        true
+      );
+
+
+      xhr.upload.addEventListener(
+        "progress",
+        event => {
+
+          if (!event.lengthComputable) {
+            return;
+          }
+
+          const percent =
+            (event.loaded / event.total) * 100;
+
+          setProgress(
+            percent,
+            "Uploading video..."
+          );
+        }
+      );
+
+
+      xhr.addEventListener(
+        "load",
+        () => {
+
+          let data = null;
+
+          try {
+            data =
+              JSON.parse(
+                xhr.responseText
+              );
+          } catch (error) {
+            data = null;
+          }
+
+
+          if (
+            xhr.status >= 200 &&
+            xhr.status < 300 &&
+            data &&
+            data.ok
+          ) {
+
+            setProgress(
+              100,
+              "Upload completed successfully"
+            );
+
+            progressTitle.textContent =
+              "Upload complete";
+
+            resultPanel.classList.add(
+              "show"
+            );
+
+            const jobId =
+              data.job &&
+              data.job.id
+                ? data.job.id
+                : "Unavailable";
+
+            jobIdBox.textContent =
+              `JOB ID: ${jobId}`;
+
+            actionStatus.textContent =
+              "Video uploaded and ready for the next processing stage";
+
+            showToast(
+              "Video uploaded successfully"
+            );
+
+            uploadBtn.disabled = false;
+
+            return;
+          }
+
+
+          const message =
+            data &&
+            data.error
+              ? data.error
+              : `Upload failed (${xhr.status})`;
+
+          progressTitle.textContent =
+            "Upload failed";
+
+          progressMessage.textContent =
+            message;
+
+          actionStatus.textContent =
+            "Upload failed";
+
+          uploadBtn.disabled = false;
+
+          showToast(
+            message,
+            true
+          );
+        }
+      );
+
+
+      xhr.addEventListener(
+        "error",
+        () => {
+
+          progressTitle.textContent =
+            "Connection error";
+
+          progressMessage.textContent =
+            "Could not connect to the backend";
+
+          actionStatus.textContent =
+            "Backend connection failed";
+
+          uploadBtn.disabled = false;
+
+          showToast(
+            "Could not connect to AUNG RECAP PRO",
+            true
+          );
+        }
+      );
+
+
+      xhr.addEventListener(
+        "timeout",
+        () => {
+
+          progressTitle.textContent =
+            "Upload timeout";
+
+          progressMessage.textContent =
+            "The upload took too long";
+
+          actionStatus.textContent =
+            "Upload timeout";
+
+          uploadBtn.disabled = false;
+
+          showToast(
+            "Upload timed out",
+            true
+          );
+        }
+      );
+
+
+      xhr.timeout =
+        15 * 60 * 1000;
+
+
+      xhr.send(formData);
+    }
+
+
+    uploadBtn.addEventListener(
+      "click",
+      uploadVideo
+    );
+
+
+    /* =====================================
+       NAVIGATION
+    ===================================== */
+
+    document
+      .querySelectorAll(".nav-btn")
+      .forEach(button => {
+
+        button.addEventListener(
+          "click",
+          () => {
+
+            document
+              .querySelectorAll(".nav-btn")
+              .forEach(item => {
+                item.classList.remove(
+                  "active"
+                );
+              });
+
+            button.classList.add(
+              "active"
+            );
+
+            const section =
+              button.dataset.section;
+
+            if (
+              section !== "create"
+            ) {
+
+              showToast(
+                `${button.textContent.trim()} module will be connected in the next V8 release`
+              );
+            }
+
+            if (
+              window.innerWidth <= 900
+            ) {
+              sidebar.classList.remove(
+                "open"
+              );
+            }
+          }
+        );
+
+      });
+
+
+    /* =====================================
+       MOBILE MENU
+    ===================================== */
+
+    mobileMenuBtn.addEventListener(
+      "click",
+      () => {
+
+        sidebar.classList.toggle(
+          "open"
+        );
+      }
+    );
+
+
+    /* =====================================
+       BACKEND HEALTH
+    ===================================== */
+
+    async function checkBackend() {
+
+      try {
+
+        const response =
+          await fetch(
+            `${API_BASE}/health`,
+            {
+              method: "GET",
+              cache: "no-store"
+            }
+          );
+
+
+        if (!response.ok) {
+          throw new Error(
+            `HTTP ${response.status}`
+          );
+        }
+
+
+        const data =
+          await response.json();
+
+
+        if (!data.ok) {
+          throw new Error(
+            "Backend returned unhealthy status"
+          );
+        }
+
+
+        healthText.textContent =
+          "Backend Online";
+
+        healthPill.classList.remove(
+          "error"
+        );
+
+        healthDot.style.background =
+          "var(--green)";
+
+        sidebarStatusText.textContent =
+          "Online";
+
+        sidebarStatusDot.style.background =
+          "var(--green)";
+
+      } catch (error) {
+
+        healthText.textContent =
+          "Backend Offline";
+
+        healthPill.classList.add(
+          "error"
+        );
+
+        healthDot.style.background =
+          "var(--red)";
+
+        sidebarStatusText.textContent =
+          "Offline";
+
+        sidebarStatusDot.style.background =
+          "var(--red)";
+      }
+    }
+
+
+    /* =====================================
+       INITIALIZE
+    ===================================== */
+
+    checkBackend();
+
+    window.setInterval(
+      checkBackend,
+      30000
+    );
+
+  </script>
+
+</body>
+</html>
