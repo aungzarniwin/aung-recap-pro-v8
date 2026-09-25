@@ -2,10 +2,39 @@
 "use strict";
 
 /* =========================================================
-   AUNG RECAP PRO V8.1.2 FRONTEND
-   Upload → Analyze → Poll → Result
-   Rate Limit Protection
-========================================================= */
+   AUNG RECAP PRO V8.2
+   COMPLETE FRONTEND SCRIPT
+
+   Flow:
+   Select Video
+      ↓
+   Upload
+      ↓
+   Job ID
+      ↓
+   Analyze
+      ↓
+   Poll Job
+      ↓
+   Result
+
+   Improvements:
+   - Stable upload state
+   - jobId / job.id / id compatibility
+   - 429 rate-limit protection
+   - NO automatic retry after 429
+   - Manual retry after cooldown
+   - Double-click protection
+   - Temporary polling recovery
+   - Result compatibility
+   - Safe HTML rendering
+   - Reset state cleanup
+   ========================================================= */
+
+
+/* =========================================================
+   CONFIG
+   ========================================================= */
 
 const API_BASE =
   "https://aung-recap-pro-v8-1.onrender.com";
@@ -13,23 +42,52 @@ const API_BASE =
 const MAX_FILE_SIZE =
   500 * 1024 * 1024;
 
+const POLL_INTERVAL =
+  2500;
+
+const POLL_ERROR_INTERVAL =
+  5000;
+
+const API_TIMEOUT =
+  120000;
+
+
+/* =========================================================
+   STATE
+   ========================================================= */
+
 let selectedFile = null;
+
 let currentJobId = null;
+
 let pollTimer = null;
+
 let uploadBusy = false;
+
 let analysisBusy = false;
+
 let retryCountdownTimer = null;
+
+let retryRemaining = 0;
+
+let toastTimer = null;
+
+let apiCheckBusy = false;
+
+let destroyed = false;
+
 
 /* =========================================================
    ELEMENT HELPER
-========================================================= */
+   ========================================================= */
 
 const $ = (id) =>
   document.getElementById(id);
 
+
 /* =========================================================
-   ELEMENTS
-========================================================= */
+   DOM ELEMENTS
+   ========================================================= */
 
 const sidebar =
   $("sidebar");
@@ -109,13 +167,62 @@ const continueBtn =
 const toast =
   $("toast");
 
+
+/* =========================================================
+   SAFE DOM HELPERS
+   ========================================================= */
+
+function setText(element, value) {
+
+  if (!element) {
+    return;
+  }
+
+  element.textContent =
+    String(value ?? "");
+}
+
+
+function setDisabled(element, disabled) {
+
+  if (!element) {
+    return;
+  }
+
+  element.disabled =
+    Boolean(disabled);
+}
+
+
+function setWidth(element, percent) {
+
+  if (!element) {
+    return;
+  }
+
+  const safe =
+    Math.max(
+      0,
+      Math.min(
+        100,
+        Number(percent) || 0
+      )
+    );
+
+  element.style.width =
+    `${safe}%`;
+}
+
+
 /* =========================================================
    TOAST
-========================================================= */
-
-let toastTimer = null;
+   ========================================================= */
 
 function showToast(message) {
+
+  if (!toast) {
+    return;
+  }
 
   clearTimeout(
     toastTimer
@@ -135,24 +242,28 @@ function showToast(message) {
         "show"
       );
 
-    }, 4000);
+    }, 4500);
 }
+
 
 /* =========================================================
    FORMAT BYTES
-========================================================= */
+   ========================================================= */
 
 function formatBytes(bytes) {
 
   if (
-    !Number.isFinite(bytes)
+    !Number.isFinite(bytes) ||
+    bytes < 0
   ) {
+
     return "Unknown size";
   }
 
   if (
     bytes < 1024
   ) {
+
     return `${bytes} B`;
   }
 
@@ -160,6 +271,7 @@ function formatBytes(bytes) {
     bytes <
     1024 * 1024
   ) {
+
     return `${(
       bytes / 1024
     ).toFixed(1)} KB`;
@@ -171,6 +283,7 @@ function formatBytes(bytes) {
     1024 *
     1024
   ) {
+
     return `${(
       bytes /
       (1024 * 1024)
@@ -185,1141 +298,204 @@ function formatBytes(bytes) {
   ).toFixed(2)} GB`;
 }
 
-/* =========================================================
-   API HEALTH
-========================================================= */
-
-async function checkApi() {
-
-  const dot =
-    $("apiDot");
-
-  const text =
-    $("apiText");
-
-  try {
-
-    const response =
-      await fetch(
-        `${API_BASE}/health`,
-        {
-          method:
-            "GET",
-
-          cache:
-            "no-store"
-        }
-      );
-
-    if (
-      !response.ok
-    ) {
-      throw new Error(
-        `HTTP ${response.status}`
-      );
-    }
-
-    const data =
-      await response.json();
-
-    if (
-      data &&
-      data.ok === true &&
-      data.status ===
-        "healthy"
-    ) {
-
-      dot.className =
-        "api-dot online";
-
-      text.textContent =
-        `API Online • ${
-          data.version ||
-          "V8"
-        }`;
-
-      return true;
-    }
-
-    throw new Error(
-      "API unhealthy"
-    );
-
-  } catch (error) {
-
-    console.error(
-      "API HEALTH:",
-      error
-    );
-
-    dot.className =
-      "api-dot error";
-
-    text.textContent =
-      "API Offline";
-
-    return false;
-  }
-}
 
 /* =========================================================
-   MOBILE MENU
-========================================================= */
-
-function openMenu() {
-
-  sidebar.classList.add(
-    "open"
-  );
-
-  overlay.classList.add(
-    "show"
-  );
-}
-
-function closeMenu() {
-
-  sidebar.classList.remove(
-    "open"
-  );
-
-  overlay.classList.remove(
-    "show"
-  );
-}
-
-mobileMenu.addEventListener(
-  "click",
-  openMenu
-);
-
-overlay.addEventListener(
-  "click",
-  closeMenu
-);
-
-/* =========================================================
-   NAVIGATION
-========================================================= */
-
-const pageNames = {
-  create:
-    "Create Recap",
-
-  studio:
-    "Recap Studio",
-
-  projects:
-    "Projects",
-
-  voice:
-    "AI Voice",
-
-  subtitles:
-    "Subtitles",
-
-  settings:
-    "Settings"
-};
-
-document
-  .querySelectorAll(
-    ".nav-btn"
-  )
-  .forEach(
-    (button) => {
-
-      button.addEventListener(
-        "click",
-        () => {
-
-          const module =
-            button.dataset.module;
-
-          document
-            .querySelectorAll(
-              ".nav-btn"
-            )
-            .forEach(
-              (item) => {
-                item.classList.remove(
-                  "active"
-                );
-              }
-            );
-
-          button.classList.add(
-            "active"
-          );
-
-          document
-            .querySelectorAll(
-              ".module"
-            )
-            .forEach(
-              (item) => {
-                item.classList.remove(
-                  "active"
-                );
-              }
-            );
-
-          const target =
-            $(
-              `module-${module}`
-            );
-
-          if (target) {
-
-            target.classList.add(
-              "active"
-            );
-          }
-
-          const title =
-            $("pageTitle");
-
-          if (title) {
-
-            title.textContent =
-              pageNames[module] ||
-              "AUNG RECAP PRO";
-          }
-
-          closeMenu();
-
-          window.scrollTo({
-            top: 0,
-            behavior:
-              "smooth"
-          });
-        }
-      );
-    }
-  );
-
-/* =========================================================
-   FILE SELECTION
-========================================================= */
-
-function handleFile(file) {
-
-  if (!file) {
-    return;
-  }
-
-  if (
-    !file.type ||
-    !file.type.startsWith(
-      "video/"
-    )
-  ) {
-
-    showToast(
-      "Please select a video file"
-    );
-
-    return;
-  }
-
-  if (
-    file.size >
-    MAX_FILE_SIZE
-  ) {
-
-    showToast(
-      "Video must be 500 MB or smaller"
-    );
-
-    return;
-  }
-
-  selectedFile =
-    file;
-
-  currentJobId =
-    null;
-
-  analyzeBtn.disabled =
-    true;
-
-  uploadBtn.disabled =
-    false;
-
-  fileName.textContent =
-    file.name;
-
-  fileMeta.textContent =
-    `${formatBytes(
-      file.size
-    )} • ${
-      file.type ||
-      "video"
-    }`;
-
-  fileInfo.classList.add(
-    "show"
-  );
-
-  analysisPanel.classList.remove(
-    "show"
-  );
-
-  showToast(
-    "Video selected — click Upload Video"
-  );
-}
-
-chooseBtn.addEventListener(
-  "click",
-  () => {
-    videoInput.click();
-  }
-);
-
-videoInput.addEventListener(
-  "change",
-  () => {
-
-    const file =
-      videoInput.files?.[0];
-
-    handleFile(file);
-  }
-);
-
-/* =========================================================
-   DRAG & DROP
-========================================================= */
-
-[
-  "dragenter",
-  "dragover"
-].forEach(
-  (eventName) => {
-
-    dropzone.addEventListener(
-      eventName,
-      (event) => {
-
-        event.preventDefault();
-
-        event.stopPropagation();
-
-        dropzone.classList.add(
-          "drag"
-        );
-      }
-    );
-  }
-);
-
-[
-  "dragleave",
-  "drop"
-].forEach(
-  (eventName) => {
-
-    dropzone.addEventListener(
-      eventName,
-      (event) => {
-
-        event.preventDefault();
-
-        event.stopPropagation();
-
-        dropzone.classList.remove(
-          "drag"
-        );
-      }
-    );
-  }
-);
-
-dropzone.addEventListener(
-  "drop",
-  (event) => {
-
-    const file =
-      event
-        .dataTransfer
-        ?.files?.[0];
-
-    handleFile(file);
-  }
-);
-
-/* =========================================================
-   RESET
-========================================================= */
-
-function resetAll() {
-
-  if (pollTimer) {
-
-    clearTimeout(
-      pollTimer
-    );
-
-    pollTimer =
-      null;
-  }
-
-  if (
-    retryCountdownTimer
-  ) {
-
-    clearInterval(
-      retryCountdownTimer
-    );
-
-    retryCountdownTimer =
-      null;
-  }
-
-  selectedFile =
-    null;
-
-  currentJobId =
-    null;
-
-  uploadBusy =
-    false;
-
-  analysisBusy =
-    false;
-
-  videoInput.value =
-    "";
-
-  fileInfo.classList.remove(
-    "show"
-  );
-
-  uploadProgressWrap.classList.remove(
-    "show"
-  );
-
-  uploadProgress.style.width =
-    "0%";
-
-  uploadPercent.textContent =
-    "0%";
-
-  uploadStage.textContent =
-    "Uploading video";
-
-  uploadBtn.disabled =
-    true;
-
-  analyzeBtn.disabled =
-    true;
-
-  analysisPanel.classList.remove(
-    "show"
-  );
-
-  analysisProgress.style.width =
-    "0%";
-
-  analysisPercent.textContent =
-    "0%";
-
-  analysisProgressText.textContent =
-    "Preparing AI analysis";
-
-  analysisStage.textContent =
-    "Waiting for analysis";
-
-  analysisStatus.className =
-    "status-pill";
-
-  analysisStatus.textContent =
-    "● Ready";
-
-  analysisActions.style.display =
-    "none";
-
-  $("sceneCount").textContent =
-    "—";
-
-  $("characterCount").textContent =
-    "—";
-
-  $("eventCount").textContent =
-    "—";
-
-  $("storyType").textContent =
-    "—";
-
-  $("resultTitle").textContent =
-    "Story Analysis";
-
-  $("resultSynopsis").textContent =
-    "AI analysis results will appear here";
-
-  $("characterList").innerHTML =
-    `
-      <div class="list-item">
-        <span>
-          Waiting for AI analysis
-        </span>
-      </div>
-    `;
-
-  $("eventList").innerHTML =
-    `
-      <div class="list-item">
-        <span>
-          Waiting for AI analysis
-        </span>
-      </div>
-    `;
-
-  $("sceneList").innerHTML =
-    `
-      <div class="list-item">
-        <span>
-          Scene analysis will appear here
-        </span>
-      </div>
-    `;
-
-  showToast(
-    "Reset complete"
-  );
-}
-
-resetBtn.addEventListener(
-  "click",
-  resetAll
-);
-
-/* =========================================================
-   UPLOAD VIDEO
-========================================================= */
-
-function uploadVideo() {
-
-  if (
-    !selectedFile ||
-    uploadBusy
-  ) {
-
-    if (
-      !selectedFile
-    ) {
-      showToast(
-        "Choose a video first"
-      );
-    }
-
-    return;
-  }
-
-  uploadBusy =
-    true;
-
-  currentJobId =
-    null;
-
-  uploadBtn.disabled =
-    true;
-
-  analyzeBtn.disabled =
-    true;
-
-  uploadProgressWrap.classList.add(
-    "show"
-  );
-
-  uploadStage.textContent =
-    "Uploading video";
-
-  uploadPercent.textContent =
-    "0%";
-
-  uploadProgress.style.width =
-    "0%";
-
-  const xhr =
-    new XMLHttpRequest();
-
-  xhr.open(
-    "POST",
-    `${API_BASE}/api/upload`,
-    true
-  );
-
-  xhr.responseType =
-    "json";
-
-  xhr.upload.addEventListener(
-    "progress",
-    (event) => {
-
-      if (
-        !event.lengthComputable
-      ) {
-        return;
-      }
-
-      const percent =
-        Math.round(
-          (
-            event.loaded /
-            event.total
-          ) * 100
-        );
-
-      uploadProgress.style.width =
-        `${percent}%`;
-
-      uploadPercent.textContent =
-        `${percent}%`;
-
-      uploadStage.textContent =
-        percent >= 100
-          ? "Processing upload..."
-          : "Uploading video";
-    }
-  );
-
-  xhr.addEventListener(
-    "load",
-    () => {
-
-      uploadBusy =
-        false;
-
-      let data =
-        xhr.response;
-
-      if (
-        !data &&
-        xhr.responseText
-      ) {
-
-        try {
-          data =
-            JSON.parse(
-              xhr.responseText
-            );
-        } catch {
-          data =
-            null;
-        }
-      }
-
-      if (
-        xhr.status >= 200 &&
-        xhr.status < 300
-      ) {
-
-        /*
-         * BACKEND RETURNS:
-         *
-         * {
-         *   ok: true,
-         *   jobId: "..."
-         * }
-         *
-         * Older frontend expected:
-         *
-         * data.job.id
-         *
-         * We support BOTH formats
-         */
-
-        const jobId =
-          data?.jobId ||
-          data?.job?.id ||
-          data?.id ||
-          null;
-
-        if (!jobId) {
-
-          console.error(
-            "INVALID UPLOAD RESPONSE:",
-            data
-          );
-
-          uploadBtn.disabled =
-            false;
-
-          showToast(
-            "Upload completed but Job ID was not received"
-          );
-
-          return;
-        }
-
-        currentJobId =
-          String(jobId);
-
-        uploadProgress.style.width =
-          "100%";
-
-        uploadPercent.textContent =
-          "100%";
-
-        uploadStage.textContent =
-          "Upload complete";
-
-        /*
-         * THIS IS THE IMPORTANT FIX
-         */
-
-        analyzeBtn.disabled =
-          false;
-
-        showToast(
-          "Video uploaded — Analyze Video is ready"
-        );
-
-        return;
-      }
-
-      const message =
-        data?.error ||
-        data?.message ||
-        `Upload failed (HTTP ${xhr.status})`;
-
-      uploadBtn.disabled =
-        false;
-
-      showToast(
-        message
-      );
-    }
-  );
-
-  xhr.addEventListener(
-    "error",
-    () => {
-
-      uploadBusy =
-        false;
-
-      uploadBtn.disabled =
-        false;
-
-      analyzeBtn.disabled =
-        true;
-
-      showToast(
-        "Network error during upload"
-      );
-    }
-  );
-
-  xhr.addEventListener(
-    "abort",
-    () => {
-
-      uploadBusy =
-        false;
-
-      uploadBtn.disabled =
-        false;
-
-      showToast(
-        "Upload cancelled"
-      );
-    }
-  );
-
-  xhr.addEventListener(
-    "timeout",
-    () => {
-
-      uploadBusy =
-        false;
-
-      uploadBtn.disabled =
-        false;
-
-      showToast(
-        "Upload timed out"
-      );
-    }
-  );
-
-  const formData =
-    new FormData();
-
-  formData.append(
-    "video",
-    selectedFile
-  );
-
-  xhr.send(
-    formData
-  );
-}
-
-uploadBtn.addEventListener(
-  "click",
-  uploadVideo
-);
-
-/* =========================================================
-   ANALYSIS STATE
-========================================================= */
-
-function setAnalysisState(
-  state,
-  message
+   JSON RESPONSE HELPER
+   ========================================================= */
+
+async function readJsonSafe(
+  response
 ) {
 
-  analysisPanel.classList.add(
-    "show"
-  );
+  try {
 
-  if (
-    state ===
-    "running"
-  ) {
+    return await response.json();
 
-    analysisStatus.className =
-      "status-pill running";
+  } catch {
 
-    analysisStatus.textContent =
-      "● Analyzing";
-
-    analysisStage.textContent =
-      message ||
-      "AI is analyzing the video";
-
-    return;
+    return null;
   }
-
-  if (
-    state ===
-    "waiting"
-  ) {
-
-    analysisStatus.className =
-      "status-pill running";
-
-    analysisStatus.textContent =
-      "● Waiting";
-
-    analysisStage.textContent =
-      message ||
-      "Waiting for Gemini";
-
-    return;
-  }
-
-  if (
-    state ===
-    "done"
-  ) {
-
-    analysisStatus.className =
-      "status-pill done";
-
-    analysisStatus.textContent =
-      "● Complete";
-
-    analysisStage.textContent =
-      message ||
-      "AI analysis complete";
-
-    return;
-  }
-
-  if (
-    state ===
-    "failed"
-  ) {
-
-    analysisStatus.className =
-      "status-pill failed";
-
-    analysisStatus.textContent =
-      "● Failed";
-
-    analysisStage.textContent =
-      message ||
-      "AI analysis failed";
-
-    return;
-  }
-
-  analysisStatus.className =
-    "status-pill";
-
-  analysisStatus.textContent =
-    "● Ready";
-
-  analysisStage.textContent =
-    message ||
-    "Waiting for analysis";
 }
 
+
 /* =========================================================
-   START AI ANALYSIS
-========================================================= */
+   REQUEST WITH TIMEOUT
+   ========================================================= */
 
-async function startAnalysis() {
+async function fetchWithTimeout(
+  url,
+  options = {},
+  timeout = API_TIMEOUT
+) {
 
-  if (
-    !currentJobId
-  ) {
+  const controller =
+    new AbortController();
 
-    showToast(
-      "Upload the video first"
+  const timeoutId =
+    setTimeout(
+      () => controller.abort(),
+      timeout
     );
-
-    return;
-  }
-
-  if (
-    analysisBusy
-  ) {
-
-    return;
-  }
-
-  analysisBusy =
-    true;
-
-  analyzeBtn.disabled =
-    true;
-
-  analysisPanel.classList.add(
-    "show"
-  );
-
-  analysisActions.style.display =
-    "none";
-
-  setAnalysisState(
-    "running",
-    "Starting AI analysis..."
-  );
-
-  analysisProgress.style.width =
-    "10%";
-
-  analysisPercent.textContent =
-    "10%";
-
-  analysisProgressText.textContent =
-    "Starting AI analysis";
 
   try {
 
-    const response =
-      await fetch(
-        `${API_BASE}/api/analyze/${encodeURIComponent(
-          currentJobId
-        )}/start`,
-        {
-          method:
-            "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json"
-          },
-
-          body:
-            JSON.stringify({
-              sourceLanguage:
-                $("sourceLanguage")
-                  ?.value ||
-                "auto",
-
-              outputLanguage:
-                $("outputLanguage")
-                  ?.value ||
-                "my",
-
-              outputFormat:
-                $("outputFormat")
-                  ?.value ||
-                "original",
-
-              recapStyle:
-                $("recapStyle")
-                  ?.value ||
-                "cinematic"
-            })
-        }
-      );
-
-    const data =
-      await response
-        .json()
-        .catch(
-          () => null
-        );
-
-    /*
-     * Backend normally returns 200
-     * with:
-     *
-     * {
-     *   ok: true,
-     *   jobId: "..."
-     * }
-     */
-
-    if (
-      response.status ===
-      429
-    ) {
-
-      const seconds =
-        extractRetrySeconds(
-          data
-        );
-
-      analysisBusy =
-        false;
-
-      startRetryCountdown(
-        seconds
-      );
-
-      return;
-    }
-
-    if (
-      !response.ok
-    ) {
-
-      throw new Error(
-        data?.error ||
-        data?.message ||
-        `HTTP ${response.status}`
-      );
-    }
-
-    if (
-      data?.jobId
-    ) {
-
-      currentJobId =
-        String(
-          data.jobId
-        );
-    }
-
-    if (
-      data?.result
-    ) {
-
-      analysisBusy =
-        false;
-
-      renderAnalysis({
-        result:
-          data.result,
-
-        status:
-          "completed",
-
-        progress:
-          100
-      });
-
-      return;
-    }
-
-    /*
-     * If backend says already completed
-     */
-
-    if (
-      data?.alreadyCompleted &&
-      data?.result
-    ) {
-
-      analysisBusy =
-        false;
-
-      renderAnalysis({
-        result:
-          data.result,
-
-        status:
-          "completed",
-
-        progress:
-          100
-      });
-
-      return;
-    }
-
-    showToast(
-      "AI analysis started"
+    return await fetch(
+      url,
+      {
+        ...options,
+        signal:
+          controller.signal
+      }
     );
 
-    pollJob();
+  } finally {
 
-  } catch (error) {
-
-    console.error(
-      "ANALYSIS START:",
-      error
-    );
-
-    if (
-      isRateLimitMessage(
-        error
-      )
-    ) {
-
-      analysisBusy =
-        false;
-
-      const seconds =
-        extractRetrySeconds(
-          error
-        );
-
-      startRetryCountdown(
-        seconds
-      );
-
-      return;
-    }
-
-    analysisBusy =
-      false;
-
-    analyzeBtn.disabled =
-      false;
-
-    setAnalysisState(
-      "failed",
-      error.message ||
-      "Could not start AI analysis"
-    );
-
-    analysisActions.style.display =
-      "block";
-
-    showToast(
-      error.message ||
-      "Could not start AI analysis"
+    clearTimeout(
+      timeoutId
     );
   }
 }
 
-analyzeBtn.addEventListener(
-  "click",
-  startAnalysis
-);
 
 /* =========================================================
-   RATE LIMIT HELPERS
-========================================================= */
+   ERROR MESSAGE
+   ========================================================= */
+
+function getErrorMessage(
+  data,
+  fallback
+) {
+
+  if (
+    typeof data ===
+    "string" &&
+    data.trim()
+  ) {
+
+    return data.trim();
+  }
+
+  if (
+    data?.error?.message
+  ) {
+
+    return String(
+      data.error.message
+    );
+  }
+
+  if (
+    typeof data?.error ===
+    "string"
+  ) {
+
+    return data.error;
+  }
+
+  if (
+    typeof data?.message ===
+    "string"
+  ) {
+
+    return data.message;
+  }
+
+  return fallback ||
+    "Something went wrong";
+}
+
+
+/* =========================================================
+   JOB ID RESOLVER
+   ========================================================= */
+
+function resolveJobId(
+  data
+) {
+
+  const candidates = [
+
+    data?.jobId,
+
+    data?.job?.id,
+
+    data?.job?.jobId,
+
+    data?.id,
+
+    data?.result?.jobId,
+
+    data?.result?.job?.id
+
+  ];
+
+  for (
+    const value of candidates
+  ) {
+
+    if (
+      value !== undefined &&
+      value !== null &&
+      String(value).trim()
+    ) {
+
+      return String(value);
+    }
+  }
+
+  return null;
+}
+
+
+/* =========================================================
+   RESULT RESOLVER
+   ========================================================= */
+
+function resolveResult(
+  data
+) {
+
+  if (
+    data?.result
+  ) {
+
+    return data.result;
+  }
+
+  if (
+    data?.job?.result
+  ) {
+
+    return data.job.result;
+  }
+
+  if (
+    data?.analysis
+  ) {
+
+    return {
+      analysis:
+        data.analysis
+    };
+  }
+
+  if (
+    data?.job?.analysis
+  ) {
+
+    return {
+      analysis:
+        data.job.analysis
+    };
+  }
+
+  return null;
+}
+
+
+/* =========================================================
+   RATE LIMIT DETECTION
+   ========================================================= */
 
 function isRateLimitMessage(
   value
@@ -1378,9 +554,17 @@ function isRateLimitMessage(
     ) ||
     message.includes(
       "too many requests"
+    ) ||
+    message.includes(
+      "quota"
     )
   );
 }
+
+
+/* =========================================================
+   RETRY SECONDS
+   ========================================================= */
 
 function extractRetrySeconds(
   value
@@ -1422,9 +606,15 @@ function extractRetrySeconds(
   }
 
   const patterns = [
+
     /retry\s+(?:in|after)\s+(\d+)\s*s/i,
+
     /retry\s+(?:in|after)\s+(\d+)\s*seconds?/i,
-    /retryDelay["']?\s*:\s*["']?(\d+)s/i
+
+    /retryDelay["']?\s*:\s*["']?(\d+)s/i,
+
+    /(\d+)\s*seconds?/i
+
   ];
 
   for (
@@ -1436,41 +626,681 @@ function extractRetrySeconds(
         pattern
       );
 
-    if (match) {
+    if (
+      match &&
+      Number.isFinite(
+        Number(match[1])
+      )
+    ) {
 
-      const seconds =
-        Number(
-          match[1]
-        );
-
-      if (
-        Number.isFinite(
-          seconds
-        ) &&
-        seconds > 0
-      ) {
-
-        return Math.min(
-          Math.max(
-            seconds,
-            5
-          ),
-          120
-        );
-      }
+      return Math.min(
+        Math.max(
+          Number(match[1]),
+          5
+        ),
+        300
+      );
     }
   }
 
   return 60;
 }
 
-/* =========================================================
-   RATE LIMIT COUNTDOWN
-========================================================= */
 
-function startRetryCountdown(
-  seconds
+/* =========================================================
+   RETRY HEADER
+   ========================================================= */
+
+function getRetryAfterHeader(
+  response
 ) {
+
+  if (!response) {
+    return null;
+  }
+
+  const value =
+    response.headers.get(
+      "Retry-After"
+    );
+
+  if (!value) {
+    return null;
+  }
+
+  const seconds =
+    Number(value);
+
+  if (
+    Number.isFinite(seconds) &&
+    seconds > 0
+  ) {
+
+    return Math.min(
+      Math.max(
+        Math.ceil(seconds),
+        5
+      ),
+      300
+    );
+  }
+
+  return null;
+}
+
+
+/* =========================================================
+   API HEALTH
+   ========================================================= */
+
+async function checkApi() {
+
+  if (
+    apiCheckBusy ||
+    destroyed
+  ) {
+
+    return false;
+  }
+
+  apiCheckBusy =
+    true;
+
+  const dot =
+    $("apiDot");
+
+  const text =
+    $("apiText");
+
+  try {
+
+    const response =
+      await fetchWithTimeout(
+        `${API_BASE}/health`,
+        {
+          method:
+            "GET",
+          cache:
+            "no-store"
+        },
+        15000
+      );
+
+    const data =
+      await readJsonSafe(
+        response
+      );
+
+    if (
+      response.ok &&
+      data?.ok === true
+    ) {
+
+      if (dot) {
+
+        dot.className =
+          "api-dot online";
+      }
+
+      if (text) {
+
+        text.textContent =
+          `API Online • ${
+            data.version ||
+            "V8"
+          }`;
+      }
+
+      return true;
+    }
+
+    throw new Error(
+      getErrorMessage(
+        data,
+        `HTTP ${response.status}`
+      )
+    );
+
+  } catch (error) {
+
+    console.error(
+      "API HEALTH:",
+      error
+    );
+
+    if (dot) {
+
+      dot.className =
+        "api-dot error";
+    }
+
+    if (text) {
+
+      text.textContent =
+        "API Offline";
+    }
+
+    return false;
+
+  } finally {
+
+    apiCheckBusy =
+      false;
+  }
+}
+
+
+/* =========================================================
+   MOBILE MENU
+   ========================================================= */
+
+function openMenu() {
+
+  if (sidebar) {
+
+    sidebar.classList.add(
+      "open"
+    );
+  }
+
+  if (overlay) {
+
+    overlay.classList.add(
+      "show"
+    );
+  }
+}
+
+
+function closeMenu() {
+
+  if (sidebar) {
+
+    sidebar.classList.remove(
+      "open"
+    );
+  }
+
+  if (overlay) {
+
+    overlay.classList.remove(
+      "show"
+    );
+  }
+}
+
+
+if (mobileMenu) {
+
+  mobileMenu.addEventListener(
+    "click",
+    openMenu
+  );
+}
+
+
+if (overlay) {
+
+  overlay.addEventListener(
+    "click",
+    closeMenu
+  );
+}
+
+
+/* =========================================================
+   NAVIGATION
+   ========================================================= */
+
+const pageNames = {
+
+  create:
+    "Create Recap",
+
+  studio:
+    "Recap Studio",
+
+  projects:
+    "Projects",
+
+  voice:
+    "AI Voice",
+
+  subtitles:
+    "Subtitles",
+
+  settings:
+    "Settings"
+
+};
+
+
+document
+  .querySelectorAll(
+    ".nav-btn"
+  )
+  .forEach(
+    (button) => {
+
+      button.addEventListener(
+        "click",
+        () => {
+
+          const module =
+            button.dataset.module;
+
+          document
+            .querySelectorAll(
+              ".nav-btn"
+            )
+            .forEach(
+              (item) => {
+
+                item.classList.remove(
+                  "active"
+                );
+
+              }
+            );
+
+          button.classList.add(
+            "active"
+          );
+
+          document
+            .querySelectorAll(
+              ".module"
+            )
+            .forEach(
+              (item) => {
+
+                item.classList.remove(
+                  "active"
+                );
+
+              }
+            );
+
+          const target =
+            $(
+              `module-${module}`
+            );
+
+          if (target) {
+
+            target.classList.add(
+              "active"
+            );
+          }
+
+          const title =
+            $("pageTitle");
+
+          if (title) {
+
+            title.textContent =
+              pageNames[module] ||
+              "AUNG RECAP PRO";
+          }
+
+          closeMenu();
+
+          window.scrollTo(
+            {
+              top: 0,
+              behavior:
+                "smooth"
+            }
+          );
+        }
+      );
+
+    }
+  );
+
+
+/* =========================================================
+   FILE VALIDATION
+   ========================================================= */
+
+function isVideoFile(
+  file
+) {
+
+  if (!file) {
+    return false;
+  }
+
+  if (
+    file.type &&
+    file.type.startsWith(
+      "video/"
+    )
+  ) {
+
+    return true;
+  }
+
+  const name =
+    String(
+      file.name || ""
+    ).toLowerCase();
+
+  return /\.(mp4|mov|m4v|webm|avi|mkv|mpeg|mpg)$/i
+    .test(name);
+}
+
+
+/* =========================================================
+   FILE SELECTION
+   ========================================================= */
+
+function handleFile(
+  file
+) {
+
+  if (!file) {
+    return;
+  }
+
+  if (
+    !isVideoFile(file)
+  ) {
+
+    showToast(
+      "Please select a video file"
+    );
+
+    return;
+  }
+
+  if (
+    file.size >
+    MAX_FILE_SIZE
+  ) {
+
+    showToast(
+      "Video must be 500 MB or smaller"
+    );
+
+    return;
+  }
+
+  stopPolling();
+
+  clearRetryCountdown();
+
+  selectedFile =
+    file;
+
+  currentJobId =
+    null;
+
+  uploadBusy =
+    false;
+
+  analysisBusy =
+    false;
+
+  setDisabled(
+    uploadBtn,
+    false
+  );
+
+  setDisabled(
+    analyzeBtn,
+    true
+  );
+
+  if (fileName) {
+
+    fileName.textContent =
+      file.name;
+  }
+
+  if (fileMeta) {
+
+    fileMeta.textContent =
+      `${formatBytes(
+        file.size
+      )} • ${
+        file.type ||
+        "video"
+      }`;
+  }
+
+  if (fileInfo) {
+
+    fileInfo.classList.add(
+      "show"
+    );
+  }
+
+  if (analysisPanel) {
+
+    analysisPanel.classList.remove(
+      "show"
+    );
+  }
+
+  resetUploadVisuals();
+
+  showToast(
+    "Video selected — click Upload Video"
+  );
+}
+
+
+/* =========================================================
+   FILE INPUT
+   ========================================================= */
+
+if (chooseBtn) {
+
+  chooseBtn.addEventListener(
+    "click",
+    () => {
+
+      if (videoInput) {
+
+        videoInput.click();
+      }
+
+    }
+  );
+}
+
+
+if (videoInput) {
+
+  videoInput.addEventListener(
+    "change",
+    () => {
+
+      const file =
+        videoInput.files?.[0];
+
+      handleFile(file);
+    }
+  );
+}
+
+
+/* =========================================================
+   DRAG & DROP
+   ========================================================= */
+
+[
+  "dragenter",
+  "dragover"
+].forEach(
+  (eventName) => {
+
+    if (!dropzone) {
+      return;
+    }
+
+    dropzone.addEventListener(
+      eventName,
+      (event) => {
+
+        event.preventDefault();
+
+        event.stopPropagation();
+
+        dropzone.classList.add(
+          "drag"
+        );
+
+      }
+    );
+  }
+);
+
+
+[
+  "dragleave",
+  "drop"
+].forEach(
+  (eventName) => {
+
+    if (!dropzone) {
+      return;
+    }
+
+    dropzone.addEventListener(
+      eventName,
+      (event) => {
+
+        event.preventDefault();
+
+        event.stopPropagation();
+
+        dropzone.classList.remove(
+          "drag"
+        );
+
+      }
+    );
+  }
+);
+
+
+if (dropzone) {
+
+  dropzone.addEventListener(
+    "drop",
+    (event) => {
+
+      const file =
+        event
+          .dataTransfer
+          ?.files?.[0];
+
+      handleFile(file);
+    }
+  );
+}
+
+
+/* =========================================================
+   UPLOAD VISUAL RESET
+   ========================================================= */
+
+function resetUploadVisuals() {
+
+  if (
+    uploadProgressWrap
+  ) {
+
+    uploadProgressWrap.classList.remove(
+      "show"
+    );
+  }
+
+  setWidth(
+    uploadProgress,
+    0
+  );
+
+  setText(
+    uploadPercent,
+    "0%"
+  );
+
+  setText(
+    uploadStage,
+    "Uploading video"
+  );
+}
+
+
+/* =========================================================
+   ANALYSIS VISUAL RESET
+   ========================================================= */
+
+function resetAnalysisVisuals() {
+
+  setWidth(
+    analysisProgress,
+    0
+  );
+
+  setText(
+    analysisPercent,
+    "0%"
+  );
+
+  setText(
+    analysisProgressText,
+    "Preparing AI analysis"
+  );
+
+  setText(
+    analysisStage,
+    "Waiting for analysis"
+  );
+
+  if (analysisStatus) {
+
+    analysisStatus.className =
+      "status-pill";
+
+    analysisStatus.textContent =
+      "● Ready";
+  }
+
+  if (analysisActions) {
+
+    analysisActions.style.display =
+      "none";
+  }
+}
+
+
+/* =========================================================
+   STOP POLLING
+   ========================================================= */
+
+function stopPolling() {
+
+  if (pollTimer) {
+
+    clearTimeout(
+      pollTimer
+    );
+
+    pollTimer =
+      null;
+  }
+}
+
+
+/* =========================================================
+   CLEAR RATE LIMIT COUNTDOWN
+   ========================================================= */
+
+function clearRetryCountdown() {
 
   if (
     retryCountdownTimer
@@ -1479,101 +1309,1280 @@ function startRetryCountdown(
     clearInterval(
       retryCountdownTimer
     );
+
+    retryCountdownTimer =
+      null;
   }
 
-  let remaining =
+  retryRemaining =
+    0;
+}
+
+
+/* =========================================================
+   RESET ALL
+   ========================================================= */
+
+function resetAll() {
+
+  stopPolling();
+
+  clearRetryCountdown();
+
+  selectedFile =
+    null;
+
+  currentJobId =
+    null;
+
+  uploadBusy =
+    false;
+
+  analysisBusy =
+    false;
+
+  if (videoInput) {
+
+    videoInput.value =
+      "";
+  }
+
+  if (fileInfo) {
+
+    fileInfo.classList.remove(
+      "show"
+    );
+  }
+
+  resetUploadVisuals();
+
+  resetAnalysisVisuals();
+
+  setDisabled(
+    uploadBtn,
+    true
+  );
+
+  setDisabled(
+    analyzeBtn,
+    true
+  );
+
+  if (analysisPanel) {
+
+    analysisPanel.classList.remove(
+      "show"
+    );
+  }
+
+  setText(
+    $("sceneCount"),
+    "—"
+  );
+
+  setText(
+    $("characterCount"),
+    "—"
+  );
+
+  setText(
+    $("eventCount"),
+    "—"
+  );
+
+  setText(
+    $("storyType"),
+    "—"
+  );
+
+  setText(
+    $("resultTitle"),
+    "Story Analysis"
+  );
+
+  setText(
+    $("resultSynopsis"),
+    "AI analysis results will appear here"
+  );
+
+  const characterList =
+    $("characterList");
+
+  if (characterList) {
+
+    characterList.innerHTML = `
+      <div class="list-item">
+        <span>
+          Waiting for AI analysis
+        </span>
+      </div>
+    `;
+  }
+
+  const eventList =
+    $("eventList");
+
+  if (eventList) {
+
+    eventList.innerHTML = `
+      <div class="list-item">
+        <span>
+          Waiting for AI analysis
+        </span>
+      </div>
+    `;
+  }
+
+  const sceneList =
+    $("sceneList");
+
+  if (sceneList) {
+
+    sceneList.innerHTML = `
+      <div class="list-item">
+        <span>
+          Scene analysis will appear here
+        </span>
+      </div>
+    `;
+  }
+
+  showToast(
+    "Reset complete"
+  );
+}
+
+
+if (resetBtn) {
+
+  resetBtn.addEventListener(
+    "click",
+    resetAll
+  );
+}
+
+
+/* =========================================================
+   UPLOAD VIDEO
+   ========================================================= */
+
+function uploadVideo() {
+
+  if (
+    !selectedFile
+  ) {
+
+    showToast(
+      "Choose a video first"
+    );
+
+    return;
+  }
+
+  if (
+    uploadBusy
+  ) {
+
+    return;
+  }
+
+  stopPolling();
+
+  clearRetryCountdown();
+
+  uploadBusy =
+    true;
+
+  analysisBusy =
+    false;
+
+  currentJobId =
+    null;
+
+  setDisabled(
+    uploadBtn,
+    true
+  );
+
+  setDisabled(
+    analyzeBtn,
+    true
+  );
+
+  if (
+    uploadProgressWrap
+  ) {
+
+    uploadProgressWrap.classList.add(
+      "show"
+    );
+  }
+
+  setWidth(
+    uploadProgress,
+    0
+  );
+
+  setText(
+    uploadPercent,
+    "0%"
+  );
+
+  setText(
+    uploadStage,
+    "Uploading video"
+  );
+
+  const xhr =
+    new XMLHttpRequest();
+
+  xhr.open(
+    "POST",
+    `${API_BASE}/api/upload`,
+    true
+  );
+
+  xhr.timeout =
+    15 * 60 * 1000;
+
+  xhr.responseType =
+    "json";
+
+
+  /* -------------------------------------------------------
+     UPLOAD PROGRESS
+     ------------------------------------------------------- */
+
+  xhr.upload.addEventListener(
+    "progress",
+    (event) => {
+
+      if (
+        !event.lengthComputable
+      ) {
+
+        return;
+      }
+
+      const percent =
+        Math.round(
+          (
+            event.loaded /
+            event.total
+          ) * 100
+        );
+
+      setWidth(
+        uploadProgress,
+        percent
+      );
+
+      setText(
+        uploadPercent,
+        `${percent}%`
+      );
+
+      setText(
+        uploadStage,
+        percent >= 100
+          ? "Processing upload..."
+          : "Uploading video"
+      );
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     UPLOAD COMPLETE
+     ------------------------------------------------------- */
+
+  xhr.addEventListener(
+    "load",
+    () => {
+
+      uploadBusy =
+        false;
+
+      let data =
+        xhr.response;
+
+      if (
+        !data &&
+        xhr.responseText
+      ) {
+
+        try {
+
+          data =
+            JSON.parse(
+              xhr.responseText
+            );
+
+        } catch {
+
+          data =
+            null;
+        }
+      }
+
+
+      /* ---------------------------------------------------
+         SUCCESS
+         --------------------------------------------------- */
+
+      if (
+        xhr.status >= 200 &&
+        xhr.status < 300
+      ) {
+
+        const jobId =
+          resolveJobId(
+            data
+          );
+
+        if (!jobId) {
+
+          console.error(
+            "INVALID UPLOAD RESPONSE:",
+            data
+          );
+
+          setDisabled(
+            uploadBtn,
+            false
+          );
+
+          setDisabled(
+            analyzeBtn,
+            true
+          );
+
+          showToast(
+            "Upload completed but Job ID was not received"
+          );
+
+          return;
+        }
+
+        currentJobId =
+          jobId;
+
+        setWidth(
+          uploadProgress,
+          100
+        );
+
+        setText(
+          uploadPercent,
+          "100%"
+        );
+
+        setText(
+          uploadStage,
+          "Upload complete"
+        );
+
+        /*
+         * IMPORTANT:
+         * Analyze is enabled ONLY after
+         * a valid Job ID exists
+         */
+
+        setDisabled(
+          analyzeBtn,
+          false
+        );
+
+        setDisabled(
+          uploadBtn,
+          false
+        );
+
+        showToast(
+          "Video uploaded — Analyze Video is ready"
+        );
+
+        return;
+      }
+
+
+      /* ---------------------------------------------------
+         429 DURING UPLOAD
+         --------------------------------------------------- */
+
+      if (
+        xhr.status === 429
+      ) {
+
+        const seconds =
+          getRetryAfterHeader(
+            xhr
+          ) ||
+          extractRetrySeconds(
+            data
+          );
+
+        setDisabled(
+          uploadBtn,
+          false
+        );
+
+        setDisabled(
+          analyzeBtn,
+          true
+        );
+
+        startRetryCountdown(
+          seconds,
+          "upload"
+        );
+
+        return;
+      }
+
+
+      /* ---------------------------------------------------
+         UPLOAD ERROR
+         --------------------------------------------------- */
+
+      const message =
+        getErrorMessage(
+          data,
+          `Upload failed (HTTP ${xhr.status})`
+        );
+
+      setDisabled(
+        uploadBtn,
+        false
+      );
+
+      setDisabled(
+        analyzeBtn,
+        true
+      );
+
+      showToast(
+        message
+      );
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     NETWORK ERROR
+     ------------------------------------------------------- */
+
+  xhr.addEventListener(
+    "error",
+    () => {
+
+      uploadBusy =
+        false;
+
+      setDisabled(
+        uploadBtn,
+        false
+      );
+
+      setDisabled(
+        analyzeBtn,
+        true
+      );
+
+      showToast(
+        "Network error during upload"
+      );
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     ABORT
+     ------------------------------------------------------- */
+
+  xhr.addEventListener(
+    "abort",
+    () => {
+
+      uploadBusy =
+        false;
+
+      setDisabled(
+        uploadBtn,
+        false
+      );
+
+      setDisabled(
+        analyzeBtn,
+        true
+      );
+
+      showToast(
+        "Upload cancelled"
+      );
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     TIMEOUT
+     ------------------------------------------------------- */
+
+  xhr.addEventListener(
+    "timeout",
+    () => {
+
+      uploadBusy =
+        false;
+
+      setDisabled(
+        uploadBtn,
+        false
+      );
+
+      setDisabled(
+        analyzeBtn,
+        true
+      );
+
+      showToast(
+        "Upload timed out"
+      );
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     SEND
+     ------------------------------------------------------- */
+
+  const formData =
+    new FormData();
+
+  formData.append(
+    "video",
+    selectedFile
+  );
+
+  xhr.send(
+    formData
+  );
+}
+
+
+if (uploadBtn) {
+
+  uploadBtn.addEventListener(
+    "click",
+    uploadVideo
+  );
+}
+
+
+/* =========================================================
+   ANALYSIS STATE
+   ========================================================= */
+
+function setAnalysisState(
+  state,
+  message
+) {
+
+  if (analysisPanel) {
+
+    analysisPanel.classList.add(
+      "show"
+    );
+  }
+
+
+  if (
+    state ===
+    "running"
+  ) {
+
+    if (analysisStatus) {
+
+      analysisStatus.className =
+        "status-pill running";
+
+      analysisStatus.textContent =
+        "● Analyzing";
+    }
+
+    setText(
+      analysisStage,
+      message ||
+      "AI is analyzing the video"
+    );
+
+    return;
+  }
+
+
+  if (
+    state ===
+    "waiting"
+  ) {
+
+    if (analysisStatus) {
+
+      analysisStatus.className =
+        "status-pill running";
+
+      analysisStatus.textContent =
+        "● Waiting";
+    }
+
+    setText(
+      analysisStage,
+      message ||
+      "Waiting for Gemini"
+    );
+
+    return;
+  }
+
+
+  if (
+    state ===
+    "done"
+  ) {
+
+    if (analysisStatus) {
+
+      analysisStatus.className =
+        "status-pill done";
+
+      analysisStatus.textContent =
+        "● Complete";
+    }
+
+    setText(
+      analysisStage,
+      message ||
+      "AI analysis complete"
+    );
+
+    return;
+  }
+
+
+  if (
+    state ===
+    "failed"
+  ) {
+
+    if (analysisStatus) {
+
+      analysisStatus.className =
+        "status-pill failed";
+
+      analysisStatus.textContent =
+        "● Failed";
+    }
+
+    setText(
+      analysisStage,
+      message ||
+      "AI analysis failed"
+    );
+
+    return;
+  }
+
+
+  if (analysisStatus) {
+
+    analysisStatus.className =
+      "status-pill";
+
+    analysisStatus.textContent =
+      "● Ready";
+  }
+
+  setText(
+    analysisStage,
+    message ||
+    "Waiting for analysis"
+  );
+}
+
+
+/* =========================================================
+   START ANALYSIS
+   ========================================================= */
+
+async function startAnalysis() {
+
+  if (
+    !currentJobId
+  ) {
+
+    showToast(
+      "Upload the video first"
+    );
+
+    return;
+  }
+
+  if (
+    analysisBusy
+  ) {
+
+    return;
+  }
+
+  if (
+    retryCountdownTimer
+  ) {
+
+    showToast(
+      `Please wait ${retryRemaining}s before retrying`
+    );
+
+    return;
+  }
+
+  analysisBusy =
+    true;
+
+  setDisabled(
+    analyzeBtn,
+    true
+  );
+
+  if (analysisActions) {
+
+    analysisActions.style.display =
+      "none";
+  }
+
+  if (analysisPanel) {
+
+    analysisPanel.classList.add(
+      "show"
+    );
+  }
+
+  setAnalysisState(
+    "running",
+    "Starting AI analysis..."
+  );
+
+  setWidth(
+    analysisProgress,
+    10
+  );
+
+  setText(
+    analysisPercent,
+    "10%"
+  );
+
+  setText(
+    analysisProgressText,
+    "Starting AI analysis"
+  );
+
+
+  const payload = {
+
+    sourceLanguage:
+      $("sourceLanguage")
+        ?.value ||
+      "auto",
+
+    outputLanguage:
+      $("outputLanguage")
+        ?.value ||
+      "my",
+
+    outputFormat:
+      $("outputFormat")
+        ?.value ||
+      "original",
+
+    recapStyle:
+      $("recapStyle")
+        ?.value ||
+      "cinematic"
+
+  };
+
+
+  try {
+
+    const response =
+      await fetchWithTimeout(
+        `${API_BASE}/api/analyze/${encodeURIComponent(
+          currentJobId
+        )}/start`,
+        {
+          method:
+            "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+
+          body:
+            JSON.stringify(
+              payload
+            )
+        },
+        120000
+      );
+
+
+    const data =
+      await readJsonSafe(
+        response
+      );
+
+
+    /* -----------------------------------------------------
+       429
+       ----------------------------------------------------- */
+
+    if (
+      response.status ===
+      429
+    ) {
+
+      analysisBusy =
+        false;
+
+      const seconds =
+        getRetryAfterHeader(
+          response
+        ) ||
+        extractRetrySeconds(
+          data
+        );
+
+      startRetryCountdown(
+        seconds,
+        "analysis"
+      );
+
+      return;
+    }
+
+
+    /* -----------------------------------------------------
+       OTHER ERROR
+       ----------------------------------------------------- */
+
+    if (
+      !response.ok
+    ) {
+
+      throw new Error(
+        getErrorMessage(
+          data,
+          `AI analysis failed (HTTP ${response.status})`
+        )
+      );
+    }
+
+
+    /* -----------------------------------------------------
+       UPDATE JOB ID IF BACKEND RETURNS ONE
+       ----------------------------------------------------- */
+
+    const returnedJobId =
+      resolveJobId(
+        data
+      );
+
+    if (
+      returnedJobId
+    ) {
+
+      currentJobId =
+        returnedJobId;
+    }
+
+
+    /* -----------------------------------------------------
+       DIRECT RESULT
+       ----------------------------------------------------- */
+
+    const directResult =
+      resolveResult(
+        data
+      );
+
+    if (
+      directResult
+    ) {
+
+      analysisBusy =
+        false;
+
+      renderAnalysis(
+        {
+          result:
+            directResult,
+
+          status:
+            "completed",
+
+          progress:
+            100
+        }
+      );
+
+      return;
+    }
+
+
+    /* -----------------------------------------------------
+       ALREADY COMPLETED
+       ----------------------------------------------------- */
+
+    if (
+      data?.alreadyCompleted
+    ) {
+
+      const result =
+        resolveResult(
+          data
+        );
+
+      if (result) {
+
+        analysisBusy =
+          false;
+
+        renderAnalysis(
+          {
+            result,
+            status:
+              "completed",
+            progress:
+              100
+          }
+        );
+
+        return;
+      }
+    }
+
+
+    showToast(
+      "AI analysis started"
+    );
+
+    setAnalysisState(
+      "running",
+      "AI analysis is processing..."
+    );
+
+    setWidth(
+      analysisProgress,
+      15
+    );
+
+    setText(
+      analysisPercent,
+      "15%"
+    );
+
+    setText(
+      analysisProgressText,
+      "AI processing started"
+    );
+
+    pollJob();
+
+
+  } catch (error) {
+
+    console.error(
+      "ANALYSIS START:",
+      error
+    );
+
+    analysisBusy =
+      false;
+
+
+    /* -----------------------------------------------------
+       RATE LIMIT FROM ERROR
+       ----------------------------------------------------- */
+
+    if (
+      isRateLimitMessage(
+        error
+      )
+    ) {
+
+      const seconds =
+        extractRetrySeconds(
+          error
+        );
+
+      startRetryCountdown(
+        seconds,
+        "analysis"
+      );
+
+      return;
+    }
+
+
+    /* -----------------------------------------------------
+       ABORT / TIMEOUT
+       ----------------------------------------------------- */
+
+    if (
+      error?.name ===
+      "AbortError"
+    ) {
+
+      setDisabled(
+        analyzeBtn,
+        false
+      );
+
+      setAnalysisState(
+        "failed",
+        "Analysis request timed out"
+      );
+
+      if (analysisActions) {
+
+        analysisActions.style.display =
+          "block";
+      }
+
+      showToast(
+        "Analysis request timed out"
+      );
+
+      return;
+    }
+
+
+    /* -----------------------------------------------------
+       NORMAL ERROR
+       ----------------------------------------------------- */
+
+    setDisabled(
+      analyzeBtn,
+      false
+    );
+
+    setAnalysisState(
+      "failed",
+      error?.message ||
+      "Could not start AI analysis"
+    );
+
+    if (analysisActions) {
+
+      analysisActions.style.display =
+        "block";
+    }
+
+    showToast(
+      error?.message ||
+      "Could not start AI analysis"
+    );
+  }
+}
+
+
+if (analyzeBtn) {
+
+  analyzeBtn.addEventListener(
+    "click",
+    startAnalysis
+  );
+}
+
+
+/* =========================================================
+   RATE LIMIT COUNTDOWN
+   =========================================================
+
+   IMPORTANT:
+   We DO NOT automatically call startAnalysis()
+   after the countdown.
+
+   User must press Analyze again.
+
+   This prevents repeated Gemini 429 requests.
+   ========================================================= */
+
+function startRetryCountdown(
+  seconds,
+  source = "analysis"
+) {
+
+  clearRetryCountdown();
+
+  retryRemaining =
     Math.max(
       1,
       Number(seconds) ||
       60
     );
 
-  analysisPanel.classList.add(
-    "show"
-  );
-
   analysisBusy =
     false;
 
-  analyzeBtn.disabled =
-    true;
+  if (
+    source ===
+    "analysis"
+  ) {
 
-  analysisActions.style.display =
-    "none";
+    setDisabled(
+      analyzeBtn,
+      true
+    );
 
-  setAnalysisState(
-    "waiting",
-    `Gemini rate limit reached — retrying in ${remaining}s`
-  );
+    setAnalysisState(
+      "waiting",
+      `Gemini rate limit reached — wait ${retryRemaining}s`
+    );
 
-  analysisProgress.style.width =
-    "58%";
+    setWidth(
+      analysisProgress,
+      58
+    );
 
-  analysisPercent.textContent =
-    "58%";
+    setText(
+      analysisPercent,
+      "58%"
+    );
 
-  analysisProgressText.textContent =
-    `Retry in ${remaining}s`;
+    setText(
+      analysisProgressText,
+      `Retry available in ${retryRemaining}s`
+    );
+
+  } else {
+
+    setDisabled(
+      uploadBtn,
+      true
+    );
+
+    setText(
+      uploadStage,
+      `Retry available in ${retryRemaining}s`
+    );
+  }
 
   showToast(
-    `Gemini rate limit reached — retrying in ${remaining}s`
+    `Rate limit reached — wait ${retryRemaining}s`
   );
+
 
   retryCountdownTimer =
     setInterval(
       () => {
 
-        remaining--;
+        retryRemaining--;
 
         if (
-          remaining <= 0
+          retryRemaining <= 0
         ) {
 
-          clearInterval(
-            retryCountdownTimer
-          );
-
-          retryCountdownTimer =
-            null;
+          clearRetryCountdown();
 
           if (
-            currentJobId
+            source ===
+            "analysis"
           ) {
 
-            startAnalysis();
+            /*
+             * IMPORTANT:
+             * Do not auto-run Gemini.
+             */
 
-          } else {
-
-            analyzeBtn.disabled =
-              false;
+            setDisabled(
+              analyzeBtn,
+              !currentJobId
+            );
 
             setAnalysisState(
               "failed",
-              "Upload the video again"
+              "Cooldown finished — click Analyze Video to try again"
+            );
+
+            setText(
+              analysisProgressText,
+              "Ready for manual retry"
+            );
+
+            showToast(
+              "Cooldown finished — Analyze Video is ready"
+            );
+
+          } else {
+
+            setDisabled(
+              uploadBtn,
+              !selectedFile
+            );
+
+            setText(
+              uploadStage,
+              "Ready to upload"
+            );
+
+            showToast(
+              "Upload is ready to retry"
             );
           }
 
           return;
         }
 
-        analysisStage.textContent =
-          `Gemini rate limit reached — retrying in ${remaining}s`;
 
-        analysisProgressText.textContent =
-          `Retry in ${remaining}s`;
+        if (
+          source ===
+          "analysis"
+        ) {
+
+          setText(
+            analysisStage,
+            `Gemini rate limit reached — wait ${retryRemaining}s`
+          );
+
+          setText(
+            analysisProgressText,
+            `Retry available in ${retryRemaining}s`
+          );
+
+        } else {
+
+          setText(
+            uploadStage,
+            `Retry available in ${retryRemaining}s`
+          );
+        }
+
       },
       1000
     );
 }
 
+
 /* =========================================================
    POLL JOB
-========================================================= */
+   ========================================================= */
 
 async function pollJob() {
 
   if (
-    !currentJobId
+    !currentJobId ||
+    destroyed
   ) {
 
     return;
@@ -1582,7 +2591,7 @@ async function pollJob() {
   try {
 
     const response =
-      await fetch(
+      await fetchWithTimeout(
         `${API_BASE}/api/jobs/${encodeURIComponent(
           currentJobId
         )}`,
@@ -1592,30 +2601,80 @@ async function pollJob() {
 
           cache:
             "no-store"
-        }
+        },
+        30000
       );
 
+
     const data =
-      await response
-        .json()
-        .catch(
-          () => null
-        );
+      await readJsonSafe(
+        response
+      );
+
+
+    /* -----------------------------------------------------
+       POLL HTTP ERROR
+       ----------------------------------------------------- */
 
     if (
-      !response.ok ||
-      !data?.ok ||
-      !data?.job
+      response.status ===
+      429
+    ) {
+
+      const seconds =
+        getRetryAfterHeader(
+          response
+        ) ||
+        extractRetrySeconds(
+          data
+        );
+
+      analysisBusy =
+        false;
+
+      startRetryCountdown(
+        seconds,
+        "analysis"
+      );
+
+      return;
+    }
+
+
+    if (
+      !response.ok
     ) {
 
       throw new Error(
-        data?.error ||
-        "Unable to read job status"
+        getErrorMessage(
+          data,
+          `Unable to read job status (HTTP ${response.status})`
+        )
       );
     }
 
+
+    /* -----------------------------------------------------
+       ACCEPT DIFFERENT RESPONSE SHAPES
+       ----------------------------------------------------- */
+
     const job =
-      data.job;
+      data?.job ||
+      data?.result?.job ||
+      data;
+
+
+    if (
+      !job ||
+      typeof job !==
+      "object"
+    ) {
+
+      throw new Error(
+        "Invalid job response"
+      );
+    }
+
 
     const progress =
       Math.max(
@@ -1623,37 +2682,58 @@ async function pollJob() {
         Math.min(
           100,
           Number(
-            job.progress
+            job.progress ??
+            data.progress ??
+            0
           ) || 0
         )
       );
 
-    analysisProgress.style.width =
-      `${progress}%`;
 
-    analysisPercent.textContent =
-      `${progress}%`;
+    setWidth(
+      analysisProgress,
+      progress
+    );
 
-    /*
-     * Backend uses "message"
-     * not "stage"
-     */
+    setText(
+      analysisPercent,
+      `${progress}%`
+    );
+
 
     const message =
       job.message ||
       job.stage ||
+      job.statusMessage ||
+      data.message ||
       "AI processing";
 
-    analysisProgressText.textContent =
-      message;
+
+    setText(
+      analysisProgressText,
+      message
+    );
+
+
+    /* -----------------------------------------------------
+       COMPLETED
+       ----------------------------------------------------- */
 
     if (
       job.status ===
+      "completed" ||
+      job.status ===
+      "complete" ||
+      job.status ===
+      "done" ||
+      data.status ===
       "completed"
     ) {
 
       analysisBusy =
         false;
+
+      stopPolling();
 
       renderAnalysis(
         job
@@ -1662,55 +2742,86 @@ async function pollJob() {
       return;
     }
 
+
+    /* -----------------------------------------------------
+       FAILED
+       ----------------------------------------------------- */
+
     if (
       job.status ===
-      "failed"
+      "failed" ||
+      job.status ===
+      "error"
     ) {
 
       analysisBusy =
         false;
 
-      /*
-       * 429 may have reached
-       * final backend retry limit
-       */
+      stopPolling();
+
+      const errorMessage =
+        job.error ||
+        job.message ||
+        data.error ||
+        data.message ||
+        "AI analysis failed";
+
 
       if (
         isRateLimitMessage(
-          job.error
+          errorMessage
         )
       ) {
 
         const seconds =
           extractRetrySeconds(
-            job.error
+            errorMessage
           );
 
         startRetryCountdown(
-          seconds
+          seconds,
+          "analysis"
         );
 
         return;
       }
 
-      analyzeBtn.disabled =
-        false;
+
+      setDisabled(
+        analyzeBtn,
+        false
+      );
 
       setAnalysisState(
         "failed",
-        job.error ||
-        "AI analysis failed"
+        errorMessage
       );
 
-      analysisActions.style.display =
-        "block";
+      if (analysisActions) {
+
+        analysisActions.style.display =
+          "block";
+      }
+
+      showToast(
+        errorMessage
+      );
 
       return;
     }
 
+
+    /* -----------------------------------------------------
+       WAITING
+       ----------------------------------------------------- */
+
     if (
       job.status ===
-        "waiting"
+      "waiting" ||
+      job.status ===
+      "queued" ||
+      job.status ===
+      "pending"
     ) {
 
       setAnalysisState(
@@ -1726,11 +2837,19 @@ async function pollJob() {
       );
     }
 
+
+    /* -----------------------------------------------------
+       CONTINUE POLLING
+       ----------------------------------------------------- */
+
+    stopPolling();
+
     pollTimer =
       setTimeout(
         pollJob,
-        2500
+        POLL_INTERVAL
       );
+
 
   } catch (error) {
 
@@ -1739,43 +2858,65 @@ async function pollJob() {
       error
     );
 
+
     /*
-     * Do not immediately fail
-     * on temporary network errors
+     * Temporary network errors should not
+     * immediately mark the job as failed.
      */
+
+    if (
+      isRateLimitMessage(
+        error
+      )
+    ) {
+
+      analysisBusy =
+        false;
+
+      const seconds =
+        extractRetrySeconds(
+          error
+        );
+
+      startRetryCountdown(
+        seconds,
+        "analysis"
+      );
+
+      return;
+    }
+
+
+    stopPolling();
 
     pollTimer =
       setTimeout(
         pollJob,
-        4000
+        POLL_ERROR_INTERVAL
       );
   }
 }
 
+
 /* =========================================================
    RENDER ANALYSIS
-========================================================= */
+   ========================================================= */
 
 function renderAnalysis(
   job
 ) {
 
-  /*
-   * Backend result structure:
-   *
-   * job.result.analysis
-   *
-   * Support older direct format too
-   */
-
   const result =
     job?.result ||
+    job?.data ||
     {};
 
   const analysis =
     result?.analysis ||
     job?.analysis ||
+    result ||
     {};
+
 
   const scenes =
     Array.isArray(
@@ -1784,6 +2925,7 @@ function renderAnalysis(
       ? analysis.scenes
       : [];
 
+
   const characters =
     Array.isArray(
       analysis.characters
@@ -1791,40 +2933,60 @@ function renderAnalysis(
       ? analysis.characters
       : [];
 
+
   const events =
     Array.isArray(
       analysis.keyEvents
     )
       ? analysis.keyEvents
-      : [];
+      : (
+          Array.isArray(
+            analysis.events
+          )
+            ? analysis.events
+            : []
+        );
 
-  $("sceneCount")
-    .textContent =
-    scenes.length;
 
-  $("characterCount")
-    .textContent =
-    characters.length;
+  setText(
+    $("sceneCount"),
+    scenes.length
+  );
 
-  $("eventCount")
-    .textContent =
-    events.length;
+  setText(
+    $("characterCount"),
+    characters.length
+  );
 
-  $("storyType")
-    .textContent =
+  setText(
+    $("eventCount"),
+    events.length
+  );
+
+  setText(
+    $("storyType"),
     analysis.storyType ||
-    "Story";
+    analysis.genre ||
+    "Story"
+  );
 
-  $("resultTitle")
-    .textContent =
+
+  setText(
+    $("resultTitle"),
     analysis.title ||
-    "Story Analysis";
+    analysis.name ||
+    "Story Analysis"
+  );
 
-  $("resultSynopsis")
-    .textContent =
+
+  setText(
+    $("resultSynopsis"),
     analysis.synopsis ||
     analysis.logline ||
-    "No synopsis returned";
+    analysis.summary ||
+    "No synopsis returned"
+  );
+
 
   renderCharacters(
     characters
@@ -1838,37 +3000,55 @@ function renderAnalysis(
     scenes
   );
 
-  analysisProgress.style.width =
-    "100%";
 
-  analysisPercent.textContent =
-    "100%";
+  setWidth(
+    analysisProgress,
+    100
+  );
 
-  analysisProgressText.textContent =
-    "Analysis complete";
+  setText(
+    analysisPercent,
+    "100%"
+  );
+
+  setText(
+    analysisProgressText,
+    "Analysis complete"
+  );
+
 
   setAnalysisState(
     "done",
     "AI video understanding completed"
   );
 
-  analysisActions.style.display =
-    "block";
 
-  analyzeBtn.disabled =
-    true;
+  if (analysisActions) {
+
+    analysisActions.style.display =
+      "block";
+  }
+
+
+  setDisabled(
+    analyzeBtn,
+    true
+  );
 
   analysisBusy =
     false;
+
+  stopPolling();
 
   showToast(
     "AI analysis completed successfully"
   );
 }
 
+
 /* =========================================================
    CHARACTERS
-========================================================= */
+   ========================================================= */
 
 function renderCharacters(
   characters
@@ -1877,21 +3057,29 @@ function renderCharacters(
   const list =
     $("characterList");
 
+  if (!list) {
+    return;
+  }
+
+
   if (
+    !Array.isArray(
+      characters
+    ) ||
     !characters.length
   ) {
 
-    list.innerHTML =
-      `
-        <div class="list-item">
-          <span>
-            No character data returned
-          </span>
-        </div>
-      `;
+    list.innerHTML = `
+      <div class="list-item">
+        <span>
+          No character data returned
+        </span>
+      </div>
+    `;
 
     return;
   }
+
 
   list.innerHTML =
     characters
@@ -1905,18 +3093,23 @@ function renderCharacters(
           const name =
             escapeHtml(
               character?.name ||
+              character?.character ||
               "Unknown"
             );
+
 
           const role =
             escapeHtml(
               character?.role ||
               character?.description ||
+              character?.relationship ||
               ""
             );
 
+
           return `
             <div class="list-item">
+
               <strong>
                 ${name}
               </strong>
@@ -1924,6 +3117,7 @@ function renderCharacters(
               <span>
                 ${role}
               </span>
+
             </div>
           `;
         }
@@ -1931,9 +3125,10 @@ function renderCharacters(
       .join("");
 }
 
+
 /* =========================================================
    EVENTS
-========================================================= */
+   ========================================================= */
 
 function renderEvents(
   events
@@ -1942,27 +3137,35 @@ function renderEvents(
   const list =
     $("eventList");
 
+  if (!list) {
+    return;
+  }
+
+
   if (
+    !Array.isArray(
+      events
+    ) ||
     !events.length
   ) {
 
-    list.innerHTML =
-      `
-        <div class="list-item">
-          <span>
-            No key events returned
-          </span>
-        </div>
-      `;
+    list.innerHTML = `
+      <div class="list-item">
+        <span>
+          No key events returned
+        </span>
+      </div>
+    `;
 
     return;
   }
+
 
   list.innerHTML =
     events
       .slice(
         0,
-        30
+        50
       )
       .map(
         (event) => {
@@ -1971,9 +3174,12 @@ function renderEvents(
             event?.order ??
             "";
 
+
           const timestamp =
             event?.timestamp ||
+            event?.time ||
             "";
+
 
           const title =
             timestamp ||
@@ -1983,18 +3189,22 @@ function renderEvents(
                 : "Key Event"
             );
 
+
           const text =
             escapeHtml(
               event?.event ||
               event?.description ||
+              event?.summary ||
               ""
             );
+
 
           const importance =
             escapeHtml(
               event?.importance ||
               ""
             );
+
 
           return `
             <div class="list-item">
@@ -2021,9 +3231,10 @@ function renderEvents(
       .join("");
 }
 
+
 /* =========================================================
    SCENES
-========================================================= */
+   ========================================================= */
 
 function renderScenes(
   scenes
@@ -2032,21 +3243,29 @@ function renderScenes(
   const list =
     $("sceneList");
 
+  if (!list) {
+    return;
+  }
+
+
   if (
+    !Array.isArray(
+      scenes
+    ) ||
     !scenes.length
   ) {
 
-    list.innerHTML =
-      `
-        <div class="list-item">
-          <span>
-            No scene data returned
-          </span>
-        </div>
-      `;
+    list.innerHTML = `
+      <div class="list-item">
+        <span>
+          No scene data returned
+        </span>
+      </div>
+    `;
 
     return;
   }
+
 
   list.innerHTML =
     scenes
@@ -2061,8 +3280,10 @@ function renderScenes(
             escapeHtml(
               scene?.start ||
               scene?.startTime ||
+              scene?.timestamp ||
               ""
             );
+
 
           const end =
             escapeHtml(
@@ -2071,23 +3292,29 @@ function renderScenes(
               ""
             );
 
+
           const sceneId =
             scene?.id ??
             scene?.order ??
             index + 1;
 
+
           const title =
             escapeHtml(
               scene?.title ||
+              scene?.name ||
               `Scene ${sceneId}`
             );
+
 
           const description =
             escapeHtml(
               scene?.description ||
               scene?.summary ||
+              scene?.content ||
               ""
             );
+
 
           const importance =
             escapeHtml(
@@ -2095,11 +3322,15 @@ function renderScenes(
               ""
             );
 
+
           return `
             <div class="scene">
 
               <div class="scene-time">
-                ${start || "—"}
+                ${
+                  start ||
+                  "—"
+                }
                 ${
                   end
                     ? `–${end}`
@@ -2130,9 +3361,10 @@ function renderScenes(
       .join("");
 }
 
+
 /* =========================================================
    HTML ESCAPE
-========================================================= */
+   ========================================================= */
 
 function escapeHtml(
   value
@@ -2163,82 +3395,305 @@ function escapeHtml(
     );
 }
 
+
 /* =========================================================
    RETRY BUTTON
-========================================================= */
+   ========================================================= */
 
-retryBtn.addEventListener(
-  "click",
+if (retryBtn) {
+
+  retryBtn.addEventListener(
+    "click",
+    () => {
+
+      if (
+        !currentJobId
+      ) {
+
+        showToast(
+          "Upload a video first"
+        );
+
+        return;
+      }
+
+
+      if (
+        retryCountdownTimer
+      ) {
+
+        showToast(
+          `Please wait ${retryRemaining}s`
+        );
+
+        return;
+      }
+
+
+      analysisBusy =
+        false;
+
+      if (analysisActions) {
+
+        analysisActions.style.display =
+          "none";
+      }
+
+
+      setDisabled(
+        analyzeBtn,
+        false
+      );
+
+      startAnalysis();
+    }
+  );
+}
+
+
+/* =========================================================
+   CONTINUE BUTTON
+   ========================================================= */
+
+if (continueBtn) {
+
+  continueBtn.addEventListener(
+    "click",
+    () => {
+
+      const studioButton =
+        document.querySelector(
+          '[data-module="studio"]'
+        );
+
+      if (
+        studioButton
+      ) {
+
+        studioButton.click();
+
+        showToast(
+          "Opened Recap Studio"
+        );
+
+      } else {
+
+        showToast(
+          "Recap Studio is not available"
+        );
+      }
+    }
+  );
+}
+
+
+/* =========================================================
+   PAGE VISIBILITY
+   ========================================================= */
+
+document.addEventListener(
+  "visibilitychange",
   () => {
 
     if (
-      !currentJobId
+      document.hidden
     ) {
-
-      showToast(
-        "Upload a video first"
-      );
 
       return;
     }
 
-    if (
-      retryCountdownTimer
-    ) {
+    /*
+     * When user comes back to the tab,
+     * refresh API status.
+     */
 
-      clearInterval(
-        retryCountdownTimer
-      );
+    checkApi();
 
-      retryCountdownTimer =
-        null;
-    }
-
-    analysisBusy =
-      false;
-
-    analysisActions.style.display =
-      "none";
-
-    startAnalysis();
   }
 );
 
-/* =========================================================
-   CONTINUE
-========================================================= */
 
-continueBtn.addEventListener(
-  "click",
+/* =========================================================
+   ONLINE / OFFLINE
+   ========================================================= */
+
+window.addEventListener(
+  "online",
   () => {
 
-    const studioButton =
-      document.querySelector(
-        '[data-module="studio"]'
-      );
-
-    if (
-      studioButton
-    ) {
-
-      studioButton.click();
-    }
-
     showToast(
-      "Recap Studio will be connected in the next engine"
+      "Internet connection restored"
     );
+
+    checkApi();
+
   }
 );
 
-/* =========================================================
-   STARTUP
-========================================================= */
 
-checkApi();
+window.addEventListener(
+  "offline",
+  () => {
 
-setInterval(
-  checkApi,
-  30000
+    showToast(
+      "Internet connection lost"
+    );
+
+  }
 );
+
+
+/* =========================================================
+   CLEANUP
+   ========================================================= */
+
+window.addEventListener(
+  "beforeunload",
+  () => {
+
+    destroyed =
+      true;
+
+    stopPolling();
+
+    clearRetryCountdown();
+
+  }
+);
+
+
+/* =========================================================
+   KEYBOARD SHORTCUT
+   ========================================================= */
+
+document.addEventListener(
+  "keydown",
+  (event) => {
+
+    /*
+     * Ctrl/Cmd + Enter:
+     * Start analysis when ready
+     */
+
+    if (
+      (
+        event.ctrlKey ||
+        event.metaKey
+      ) &&
+      event.key ===
+      "Enter"
+    ) {
+
+      if (
+        currentJobId &&
+        !analysisBusy &&
+        !retryCountdownTimer &&
+        analyzeBtn &&
+        !analyzeBtn.disabled
+      ) {
+
+        event.preventDefault();
+
+        startAnalysis();
+      }
+    }
+
+
+    /*
+     * Escape:
+     * Close mobile menu
+     */
+
+    if (
+      event.key ===
+      "Escape"
+    ) {
+
+      closeMenu();
+    }
+
+  }
+);
+
+
+/* =========================================================
+   STARTUP STATE
+   ========================================================= */
+
+function initializeApp() {
+
+  /*
+   * Initial button state
+   */
+
+  setDisabled(
+    uploadBtn,
+    true
+  );
+
+  setDisabled(
+    analyzeBtn,
+    true
+  );
+
+
+  /*
+   * Initial visuals
+   */
+
+  resetUploadVisuals();
+
+  resetAnalysisVisuals();
+
+
+  /*
+   * API health
+   */
+
+  checkApi();
+
+
+  /*
+   * Refresh API status every 30 seconds
+   */
+
+  setInterval(
+    () => {
+
+      if (
+        !destroyed
+      ) {
+
+        checkApi();
+      }
+
+    },
+    30000
+  );
+
+}
+
+
+/* =========================================================
+   BOOT
+   ========================================================= */
+
+if (
+  document.readyState ===
+  "loading"
+) {
+
+  document.addEventListener(
+    "DOMContentLoaded",
+    initializeApp,
+    {
+      once: true
+    }
+  );
+
+} else {
+
+  initializeApp();
+}
 
 </script>
